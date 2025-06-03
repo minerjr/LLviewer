@@ -106,7 +106,10 @@ F32 LLViewerTexture::sFreeVRAMMegabytes = MIN_VRAM_BUDGET;
 
 LLViewerTexture::EDebugTexels LLViewerTexture::sDebugTexelsMode = LLViewerTexture::DEBUG_TEXELS_OFF;
 
-const F64 log_2 = log(2.0);
+bool LLViewerTexture::sCameraTurn = false; // Default the camera turn and move fast flags to false
+bool LLViewerTexture::sCameraMoveFast = false;
+static const F64 log_2 = log(2.0);
+static const F64 log_4 = log(4.0);
 
 //----------------------------------------------------------------------------------------------
 //namespace: LLViewerTextureAccess
@@ -1517,6 +1520,11 @@ bool LLViewerFetchedTexture::preCreateTexture(S32 usename/*= 0*/)
         }
     }
 
+    // Setup capped size and max size (for handling scaling when max size changes)
+    F64 max_size = (F64)llmax(mFullWidth, mFullHeight);
+    mMaxDiscardOffset = (S32)(log2((F64)MAX_IMAGE_SIZE_DEFAULT) - log2(max_size));
+    updateMinTexelsPerImage();
+
     return res;
 }
 
@@ -1682,6 +1690,13 @@ void LLViewerFetchedTexture::setDebugText(const std::string& text)
 }
 
 extern bool gCubeSnapshot;
+
+// Calculate the min texels per mine based on the actual height and width at the max discard level
+void LLViewerFetchedTexture::updateMinTexelsPerImage()
+{
+    // Store for reference so we don't have to keep caculating this for texture updates
+    mMinTexelsPerImage = (F32)(getWidth(getMaxDiscardLevel())* getHeight(getMaxDiscardLevel()));
+}
 
 //virtual
 void LLViewerFetchedTexture::processTextureStats()
@@ -2012,6 +2027,7 @@ bool LLViewerFetchedTexture::updateFetch()
     if (mIsFetching)
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_TEXTURE("vftuf - is fetching");
+        if (LLAppViewer::getTextureFetch()->getFetchState(getID()) != 13) return mIsFetching;
         // Sets mRawDiscardLevel, mRawImage, mAuxRawImage
         S32 fetch_discard = current_discard;
 
@@ -2956,12 +2972,148 @@ bool LLViewerLODTexture::isUpdateFrozen()
     return LLViewerTexture::sFreezeImageUpdates;
 }
 
+void LLViewerLODTexture::processTextureStatsLowVRAM()
+{
+    bool did_downscale = false;
+
+    static LLCachedControl<bool> textures_fullres(gSavedSettings,"TextureLoadFullRes", false);
+    static LLCachedControl<bool> auto_scale_on_screen_textures(gSavedSettings, "AutoOnScreenTexture", true);
+    static LLCachedControl<bool> auto_scale_off_screen_textures(gSavedSettings, "AutoOffScreenTexture", true);
+
+    bool use_auto_on_screen = auto_scale_on_screen_textures && !sCameraMoveFast && !sCameraTurn;
+    bool use_auto_off_screen = auto_scale_off_screen_textures && !sCameraMoveFast && !sCameraTurn;
+
+    F32 max_tex_res = MAX_IMAGE_SIZE_DEFAULT;
+    if (mBoostLevel < LLGLTexture::BOOST_HIGH)
+    {
+        // restrict texture resolution to download based on RenderMaxTextureResolution
+        static LLCachedControl<U32> max_texture_resolution(gSavedSettings, "RenderMaxTextureResolution", 2048);
+        // sanity clamp debug setting to avoid settings hack shenanigans
+        max_tex_res = (F32)llclamp((S32)max_texture_resolution, 512, MAX_IMAGE_SIZE_DEFAULT);
+        mMaxVirtualSize = llmin(mMaxVirtualSize, max_tex_res * max_tex_res);
+    }
+
+    if (textures_fullres)
+    {
+        mDesiredDiscardLevel = 0;
+    }
+    // Generate the request priority and render priority
+    else if (mDontDiscard || !mUseMipMaps)
+    {
+        mDesiredDiscardLevel = 0;
+        if (mFullWidth > MAX_IMAGE_SIZE_DEFAULT || mFullHeight > MAX_IMAGE_SIZE_DEFAULT)
+            mDesiredDiscardLevel = 1; // MAX_IMAGE_SIZE_DEFAULT = 2048 and max size ever is 4096
+    }
+    else if (mBoostLevel < LLGLTexture::BOOST_HIGH && mMaxVirtualSize <= 10.f)
+    {
+        // If the image has not been significantly visible in a while, we don't want it
+        mDesiredDiscardLevel = llmin(mMinDesiredDiscardLevel, (S8)(MAX_DISCARD_LEVEL + 1));
+        mDesiredDiscardLevel = llmin(mDesiredDiscardLevel, (S32)mLoadedCallbackDesiredDiscardLevel);
+
+        if (use_auto_off_screen)
+        {
+            S32 current_discard = getDiscardLevel();
+            if (mBoostLevel < LLGLTexture::BOOST_AVATAR_BAKED)
+            {
+                if (current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
+                { // should scale down
+                    scaleDown();
+                }
+            }
+        }
+    }
+    else if (!mFullWidth  || !mFullHeight)
+    {
+        mDesiredDiscardLevel =  getMaxDiscardLevel();
+        mDesiredDiscardLevel = llmin(mDesiredDiscardLevel, (S32)mLoadedCallbackDesiredDiscardLevel);
+    }
+    else
+    {
+        //static const F64 log_2 = log(2.0);
+        static const F64 log_4 = log(4.0);
+
+        F32 discard_level = 0.f;
+
+        // If we know the output width and height, we can force the discard
+        // level to the correct value, and thus not decode more texture
+        // data than we need to.
+        if (mKnownDrawWidth && mKnownDrawHeight)
+        {
+            S32 draw_texels = mKnownDrawWidth * mKnownDrawHeight;
+            draw_texels = llclamp(draw_texels, MIN_IMAGE_AREA, MAX_IMAGE_AREA);
+
+            // Use log_4 because we're in square-pixel space, so an image
+            // with twice the width and twice the height will have mTexelsPerImage
+            // 4 * draw_size
+            discard_level = (F32)(log(mTexelsPerImage / draw_texels) / log_4);
+        }
+        else
+        {
+            // Calculate the required scale factor of the image using pixels per texel
+            discard_level = (F32)(log(mTexelsPerImage / mMaxVirtualSize) / log_4);
+        }
+
+        discard_level = floorf(discard_level);
+
+        F32 min_discard = 0.f;
+        if (mFullWidth > max_tex_res || mFullHeight > max_tex_res)
+            min_discard = 1.f;
+
+        discard_level = llclamp(discard_level, min_discard, (F32)MAX_DISCARD_LEVEL);
+
+        // Can't go higher than the max discard level
+        mDesiredDiscardLevel = llmin(getMaxDiscardLevel() + 1, (S32)discard_level);
+        // Clamp to min desired discard
+        mDesiredDiscardLevel = llmin(mMinDesiredDiscardLevel, mDesiredDiscardLevel);
+
+        //
+        // At this point we've calculated the quality level that we want,
+        // if possible.  Now we check to see if we have it, and take the
+        // proper action if we don't.
+        //
+
+        S32 current_discard = getDiscardLevel();
+        if (mBoostLevel < LLGLTexture::BOOST_AVATAR_BAKED)
+        {
+            if (current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
+            { // should scale down
+                scaleDown();
+            }
+        }
+
+        if (isUpdateFrozen() // we are out of memory and nearing max allowed bias
+            && mBoostLevel < LLGLTexture::BOOST_SCULPTED
+            && mDesiredDiscardLevel < current_discard)
+        {
+            // stop requesting more
+            mDesiredDiscardLevel = current_discard;
+        }
+        mDesiredDiscardLevel = llmin(mDesiredDiscardLevel, (S32)mLoadedCallbackDesiredDiscardLevel);
+    }
+
+    if(mForceToSaveRawImage && mDesiredSavedRawDiscardLevel >= 0)
+    {
+        mDesiredDiscardLevel = llmin(mDesiredDiscardLevel, (S8)mDesiredSavedRawDiscardLevel);
+    }
+
+    // selection manager will immediately reset BOOST_SELECTED but never unsets it
+    // unset it immediately after we consume it
+    if (getBoostLevel() == BOOST_SELECTED)
+    {
+        setBoostLevel(BOOST_NONE);
+    }
+}
+
 // This is gauranteed to get called periodically for every texture
 //virtual
 void LLViewerLODTexture::processTextureStats()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
     updateVirtualSize();
+
+    static LLCachedControl<bool> auto_scale_textures(gSavedSettings, "AutoScaleTextures", true);
+
+    if (auto_scale_textures) return processTextureStatsLowVRAM();
 
     bool did_downscale = false;
 

@@ -107,6 +107,8 @@ public:
                                                      bool force_square = false,
                                                      bool force_lossless = false);
     static void processImageNotInDatabase( LLMessageSystem *msg, void **user_data );
+    
+    static void dumpTexturelist(); // Handle dumping texture information
 
 public:
     LLViewerTextureList();
@@ -146,6 +148,8 @@ public:
     // - updates desired discard level
     // - cleans up textures that haven't been referenced in awhile
     void updateImageDecodePriority(LLViewerFetchedTexture* imagep, bool flush_images = true);
+    void updateVirtualSize(LLViewerFetchedTexture* imagep);
+    void updateVirtualSizeLowVRAM(LLViewerFetchedTexture* imagep);
 
 private:
     F32  updateImagesCreateTextures(F32 max_time);

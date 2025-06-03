@@ -365,10 +365,25 @@ void LLViewerTextureList::shutdown()
     mInitialized = false ; //prevent loading textures again.
 }
 
+// Allows the menu to call the dump method of the texture list
+void LLViewerTextureList::dumpTexturelist()
+{
+    gTextureList.dump();
+}
+
 void LLViewerTextureList::dump()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
     LL_INFOS() << "LLViewerTextureList::dump()" << LL_ENDL;
+
+    S32 texture_count = 0;
+    S32 textures_close_to_camera = 0;
+    std::array<S32, MAX_DISCARD_LEVEL * 2 + 2> image_counts{0}; // Double the size for higher discards from textures < 1024 (2048 can make a 7 and 4096 could make an 8)
+    std::array<S32, 12 * 12> size_counts{0}; // Track the 12 possible sizes (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048)
+    std::array<S32, (MAX_DISCARD_LEVEL * 2 + 2) * 12> discard_counts{0}; // Also need to an 1 additional as -1 is a valid discard level (not loaded by reported as a 1x1 texture)
+    std::array<S32, (MAX_DISCARD_LEVEL * 2 + 2) * 12> fullsize_discard_counts{0}; // Also need to an 1 additional as -1 is a valid discard level (not loaded by reported as a 1x1 texture)
+    std::array<S32, LLViewerTexture::BOOST_MAX_LEVEL * 12> boost_counts{0}; // Track the # of textures at boost levels by 12 possible sizes
+  
     for (image_list_t::iterator it = mImageList.begin(); it != mImageList.end(); ++it)
     {
         LLViewerFetchedTexture* image = *it;
@@ -377,10 +392,154 @@ void LLViewerTextureList::dump()
         << " boost " << image->getBoostLevel()
         << " size " << image->getWidth() << "x" << image->getHeight()
         << " discard " << image->getDiscardLevel()
-        << " desired " << image->getDesiredDiscardLevel()
-        << " http://asset.siva.lindenlab.com/" << image->getID() << ".texture"
+        << " desired " << image->getDesiredDiscardLevel()        
+        << " close to camera " << (image->getCloseToCamera() ? "Y" : "N") // Display the close to camera flag
+        << " importance to camera " << (image->getImportanceToCamera()) // Display the close to camera flag
+        << " in frustum " << (image->getInFrustum() ? "Y" : "N") // Display the in frustum flag
+        << " bias " << (image->getBias()) // Display the close to camera flag
+        << " FFType " << fttype_to_string(image->getFTType()) // Display the FFType of the camera
+        << " Type " << (S32)image->getType() // Display the type of the image (LOCAL_TEXTURE = 0, MEDIA_TEXTURE = 1, DYNAMIC_TEXTURE = 2, FETCHED_TEXTURE = 3,LOD_TEXTURE = 4)        
+        << " Sculpted " << (image->forSculpt() ? "Y" : "N")
+        << " # of Faces ";
+        for (S32 index = 0; index < LLRender::NUM_TEXTURE_CHANNELS; index++)
+        {
+            LL_CONT << image->getNumFaces(index) << " ";
+        }        
+        LL_CONT << " # of Volumes ";
+        for (S32 index = 0; index < LLRender::NUM_VOLUME_TEXTURE_CHANNELS; index++)
+        {
+            LL_CONT << image->getNumVolumes(index) << " ";
+        }
+
+        LL_CONT << " http://asset.siva.lindenlab.com/" << image->getID() << ".texture"
         << LL_ENDL;
+
+        image_counts[(image->getDiscardLevel() + 1)] += 1; // Need to add +1 to make up for -1 being a possible value
+        S32 x_index = (S32)log2(image->getWidth()); // Convert the width into a 0 based index by taking the Log2 of the size to get the exponent of the size. (1 = 2^0, 2 = 2^1, 4 = 2^2...)
+        S32 y_index = (S32)log2(image->getHeight()); // Convert the height into a 0 based index by taking the Log2 of the size to get the exponent of the size. (1 = 2^0, 2 = 2^1, 4 = 2^2...)
+        size_counts[x_index + y_index * 12] += 1; // Add this texture's dimensions to the size count
+        // Onlyuse the largest size for the texture's discard level(for non-square textures)
+        S32 max_dimension = (y_index > x_index ? y_index : x_index);
+        discard_counts[(image->getDiscardLevel() + 1) + max_dimension * (MAX_DISCARD_LEVEL * 2 + 2)] += 1;
+        boost_counts[image->getBoostLevel() + max_dimension * (LLViewerTexture::BOOST_MAX_LEVEL)] += 1;
+        S32 full_x_index = (S32)log2(image->getFullWidth());
+        S32 full_y_index = (S32)log2(image->getFullHeight());
+        S32 full_max_dimension = (full_y_index > full_x_index ? full_y_index : full_x_index);
+        fullsize_discard_counts[(image->getDiscardLevel() + 1) + full_max_dimension * (MAX_DISCARD_LEVEL * 2 + 2)] += 1;
+        texture_count++;
+        textures_close_to_camera += S32(image->getCloseToCamera());
     }
+    // Add overal texture totals
+    LL_INFOS() << "Texture Stats: Textures in Close to Camera " << textures_close_to_camera << " of " << texture_count << " : " << LL_ENDL;
+
+    // Fix for the -1 discard level as well as higher possible discard levels (for 2048+ size textures)
+    for (S32 index = 0; index < MAX_DISCARD_LEVEL * 2 + 2; index++)
+    {
+        LL_INFOS() << " Discard Level: " << (index - 1) << " Number of Textures: " << image_counts[index] << LL_ENDL;
+    }
+
+    // Create a line to break up the header from the content of the table
+    std::string header_break(13 * 8, '-');
+
+    LL_INFOS() << "Size vs Size" << LL_ENDL;
+    LL_INFOS() << header_break << LL_ENDL;
+    // Create a header that for the Sizes
+    LL_INFOS() << std::setw(8) << "Size";
+    for (S32 x = 1; x <= 2048; x <<= 1)
+    {
+        LL_CONT << std::setw(8) << x;
+    }
+    LL_CONT << LL_ENDL;
+    LL_INFOS() << header_break << LL_ENDL;
+
+    // Y Axis is the size of the height of the texture
+    for (S32 y = 0; y < 12; y++)
+    {
+        LL_INFOS() << std::setw(8) << (1 << y);
+        //X Axis is the size of the width of the texture
+        for (S32 x = 0; x < 12; x++)
+        {
+            LL_CONT << std::setw(8) << size_counts[x + y * 12];
+
+        }
+        LL_CONT << LL_ENDL;
+    }
+    LL_INFOS() << LL_ENDL;
+
+    // This is the Discard Level Vs Size counts table
+    LL_INFOS() << "Discard Level Vs Size" << LL_ENDL;
+    LL_INFOS() << header_break << LL_ENDL;
+    LL_INFOS() << std::setw(8) << "Discard";
+    for (S32 x = 0; x < MAX_DISCARD_LEVEL * 2 + 2; x++)
+    {
+        LL_CONT << std::setw(8) << (x - 1);
+    }
+    LL_CONT << LL_ENDL;
+    LL_INFOS() << header_break << LL_ENDL;
+
+    // Y Axis is the current possible max dimension of the textures (X or Y, which ever is larger is used)
+    for (S32 y = 0; y < 12; y++)
+    {
+        LL_INFOS() << std::setw(8) << (1 << y);
+        // X Axis is the discard level starging from -1 up to 10 (2 x MAX_DISCARD_LEVEL + 1 (for negative number) + 1 additional for the fact that the last value actuauly used on not < but <=)
+        for (S32 x = 0; x < (MAX_DISCARD_LEVEL * 2 + 2); x++)
+        {
+            LL_CONT << std::setw(8) << discard_counts[x + y * (MAX_DISCARD_LEVEL * 2 + 2)];
+        }
+        LL_CONT << LL_ENDL;
+    }
+    LL_INFOS() << LL_ENDL;
+    
+
+    // This is the Discard Level Vs Full Size counts table
+    LL_INFOS() << "Discard Level Vs Full Size" << LL_ENDL;
+    LL_INFOS() << header_break << LL_ENDL;
+    LL_INFOS() << std::setw(8) << "Discard";
+    for (S32 x = 0; x < MAX_DISCARD_LEVEL * 2 + 2; x++)
+    {
+        LL_CONT << std::setw(8) << (x - 1);
+    }
+    LL_CONT << LL_ENDL;
+    LL_INFOS() << header_break << LL_ENDL;
+
+    // Y Axis is the current possible max dimension of the textures (X or Y, which ever is larger is used)
+    for (S32 y = 0; y < 12; y++)
+    {
+        LL_INFOS() << std::setw(8) << (1 << y);
+        // X Axis is the discard level starging from -1 up to 10 (2 x MAX_DISCARD_LEVEL + 1 (for negative number) + 1 additional for the fact that the last value actuauly used on not < but <=)
+        for (S32 x = 0; x < (MAX_DISCARD_LEVEL * 2 + 2); x++)
+        {
+            LL_CONT << std::setw(8) << fullsize_discard_counts[x + y * (MAX_DISCARD_LEVEL * 2 + 2)];
+        }
+        LL_CONT << LL_ENDL;
+    }
+    LL_INFOS() << LL_ENDL;
+
+
+    // This is the Boost Level Vs Size counts table
+    LL_INFOS() << "Boost Level Vs Size" << LL_ENDL;
+    header_break.append((LLViewerTexture::BOOST_MAX_LEVEL * 8) - (12 * 8), '-');
+    LL_INFOS() << header_break << LL_ENDL;    
+    LL_INFOS() << std::setw(8) << "Discard";
+    for (S32 x = 0; x < LLViewerTexture::BOOST_MAX_LEVEL; x++)
+    {
+        LL_CONT << std::setw(8) << x;
+    }
+    LL_CONT << LL_ENDL;
+    LL_INFOS() << header_break << LL_ENDL;
+
+    // Y Axis is the current possible max dimension of the textures (X or Y, which ever is larger is used)
+    for (S32 y = 0; y < 12; y++)
+    {
+        LL_INFOS() << std::setw(8) << (1 << y);
+        // X Axis is the boost level starging from BOOST_NONE up to BOOST_MAX_LEVEL
+        for (S32 x = 0; x < (LLViewerTexture::BOOST_MAX_LEVEL); x++)
+        {
+            LL_CONT << std::setw(8) << boost_counts[x + y * (LLViewerTexture::BOOST_MAX_LEVEL)];
+        }
+        LL_CONT << LL_ENDL;
+    }
+    LL_INFOS() << LL_ENDL;
 }
 
 void LLViewerTextureList::destroyGL()
@@ -660,10 +819,13 @@ LLViewerFetchedTexture* LLViewerTextureList::createImage(const LLUUID &image_id,
         //if this texture should be set to NO_DELETE, call setNoDelete() afterwards.
         imagep->forceActive() ;
     }
-
+    S32 current_discard = imagep->getDiscardLevel();
+    if (current_discard > 0 && current_discard <= MAX_DISCARD_LEVEL)
+    {
         mFastCacheList.insert(imagep);
         imagep->setInFastCacheList(true);
 
+    }
     return imagep ;
 }
 
@@ -839,6 +1001,13 @@ void LLViewerTextureList::updateImages(F32 max_time)
         sample(FORMATTED_MEM, F64Bytes(LLImageFormatted::sGlobalFormattedMemory));
     }
 
+    // Get the state of the camera, to support not triggering additional fetchs
+    LLViewerCamera* camera = LLViewerCamera::getInstance();
+    LLViewerTexture::sCameraMoveFast = camera->getAverageSpeed() > 10.0f; // Flag is the camera is moving forward fast
+    LLViewerTexture::sCameraTurn = camera->getAverageAngularSpeed() > 1.0f; // Flag if the camera is turning quick
+    // Start updates the auto scale textures
+    LLFace::sUpdateAutoScaleTextures = true;
+
     // make sure each call below gets at least its "fair share" of time
     F32 min_time = max_time * 0.33f;
     F32 remaining_time = max_time;
@@ -850,6 +1019,9 @@ void LLViewerTextureList::updateImages(F32 max_time)
     //dispatch to texture fetch threads
     remaining_time -= updateImagesFetchTextures(remaining_time);
     remaining_time = llmax(remaining_time, min_time);
+
+    // Stop the auto scale textures updates
+    LLFace::sUpdateAutoScaleTextures = false;
 
     //handle results from decode threads
     updateImagesCreateTextures(remaining_time);
@@ -895,14 +1067,309 @@ void LLViewerTextureList::clearFetchingRequests()
 
 extern bool gCubeSnapshot;
 
+constexpr F32 BIAS_TRS_OUT_OF_SCREEN = 1.5f;
+constexpr F32 BIAS_TRS_ON_SCREEN = 1.f;
+
+void LLViewerTextureList::updateVirtualSizeLowVRAM(LLViewerFetchedTexture* imagep)
+{
+    static LLCachedControl<F32> texture_scale_min(gSavedSettings, "TextureScaleMinAreaFactor", 0.0095f);
+    static LLCachedControl<F32> texture_scale_max(gSavedSettings, "TextureScaleMaxAreaFactor", 25.f);
+    static LLCachedControl<bool> auto_scale_on_screen_textures(gSavedSettings, "AutoOnScreenTexture", true);
+    static LLCachedControl<bool> auto_scale_off_screen_textures(gSavedSettings, "AutoOffScreenTexture", true);
+    static LLCachedControl<bool> near_off_screen_textures_close_to_camera_quality(gSavedSettings, "NearOffScreenTextureQuality", true);
+
+    F32 max_vsize = 0.f;
+    bool on_screen = false;
+    // Get the existing animated flag, may stop being referenced, but then used again, so protect textures used for animations
+    bool animated = imagep->getAnimated();
+    bool close_to_camera = false;
+
+    U32 face_count = 0;
+    U32 max_faces_to_check = 1024;
+
+    bool use_auto_on_screen = auto_scale_on_screen_textures && !LLViewerTexture::sCameraMoveFast && !LLViewerTexture::sCameraTurn;
+    bool use_auto_off_screen = auto_scale_off_screen_textures && !LLViewerTexture::sCameraMoveFast && !LLViewerTexture::sCameraTurn;
+
+    // get adjusted bias based on image resolution
+    LLImageGL* img = imagep->getGLTexture();
+    F32 max_discard = F32(img ? img->getMaxDiscardLevel() : MAX_DISCARD_LEVEL);
+    F32 bias = llclamp(max_discard - 2.f, 1.f, LLViewerTexture::sDesiredDiscardBias);
+
+    // convert bias into a vsize scaler, pre-divide
+    bias = (F32) 1.0f / llroundf(powf(4, bias - 1.f));
+
+    LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
+    for (U32 i = 0; i < LLRender::NUM_TEXTURE_CHANNELS; ++i)
+    {
+        face_count += imagep->getNumFaces(i);
+        S32 faces_to_check = (face_count > max_faces_to_check) ? 0 : imagep->getNumFaces(i);
+
+        for (S32 fi = 0; fi < faces_to_check; ++fi)
+        {
+            LLFace* face = (*(imagep->getFaceList(i)))[fi];
+
+            if (face && face->getViewerObject())
+            {
+                F32 radius;
+                F32 cos_angle_to_view_dir;
+
+                if ((gFrameCount - face->mLastTextureUpdate) > 10)
+                { // only call calcPixelArea at most once every 10 frames for a given face
+                  // this helps eliminate redundant calls to calcPixelArea for faces that have multiple textures
+                  // assigned to them, such as is the case with GLTF materials or Blinn-Phong materials
+                    face->mInFrustum = face->calcPixelArea(cos_angle_to_view_dir, radius);
+                    face->mLastTextureUpdate = gFrameCount;
+                }
+
+                F32 vsize = face->getPixelArea();
+
+                on_screen |= face->mInFrustum;
+                animated |= face->isState(LLFace::TEXTURE_ANIM);
+                close_to_camera |= face->mCloseToCamera;
+
+                // Scale desired texture resolution higher or lower depending on texture scale
+                //
+                // Minimum usage examples: a 1024x1024 texture with aplhabet (texture atlas),
+                // runing string shows one letter at a time. If texture has ten 100px symbols
+                // per side, minimal scale is (100/1024)^2 = 0.0095
+                //
+                // Maximum usage examples: huge chunk of terrain repeats texture
+                // TODO: make this work with the GLTF texture transforms
+                S32 te_offset = face->getTEOffset();  // offset is -1 if not inited
+                LLViewerObject* objp = face->getViewerObject();
+                const LLTextureEntry* te = (te_offset < 0 || te_offset >= objp->getNumTEs()) ? nullptr : objp->getTE(te_offset);
+                F32 min_scale = te ? llmin(fabsf(te->getScaleS()), fabsf(te->getScaleT())) : 1.f;
+                min_scale = llclamp(min_scale * min_scale, texture_scale_min(), texture_scale_max());
+                vsize /= min_scale;
+
+                if (!close_to_camera || animated)
+                {
+                // apply bias to offscreen faces all the time, but only to onscreen faces when bias is large
+                // use mImportanceToCamera to make bias switch a bit more gradual
+                if (!face->mInFrustum || LLViewerTexture::sDesiredDiscardBias > 1.9f + face->mImportanceToCamera / 2.f)
+                {
+                    vsize *= bias;
+                }
+                    else if (!face->mInCameraFrustum)
+                    {
+                        vsize *= bias;
+                    }
+                }
+
+                // boost resolution of textures that are important to the camera
+                if (face->mInFrustum && face->mInCameraFrustum)
+                {
+                    static LLCachedControl<F32> texture_camera_boost(gSavedSettings, "TextureCameraBoost", 8.f);
+                    vsize *= llmax(face->mImportanceToCamera*texture_camera_boost, 1.f);
+                }
+
+                max_vsize = llmax(max_vsize, vsize);
+
+                // addTextureStats limits size to sMaxVirtualSize
+                if (max_vsize >= LLViewerFetchedTexture::sMaxVirtualSize
+                    && (on_screen || LLViewerTexture::sDesiredDiscardBias <= BIAS_TRS_ON_SCREEN))
+                {
+                    break;
+                }
+            }
+        }
+
+        // If the face has a 
+        if (animated)
+        {
+            imagep->setAnimated(true);
+        }
+
+        if (max_vsize >= LLViewerFetchedTexture::sMaxVirtualSize
+            && (on_screen || LLViewerTexture::sDesiredDiscardBias <= BIAS_TRS_ON_SCREEN))
+        {
+            break;
+        }
+    }
+
+    if (face_count > max_faces_to_check)
+    { // this texture is used in so many places we should just boost it and not bother checking its vsize
+      // this is especially important because the above is not time sliced and can hit multiple ms for a single texture
+        max_vsize = MAX_IMAGE_AREA;
+    }
+
+    if (imagep->getType() == LLViewerTexture::LOD_TEXTURE && imagep->getBoostLevel() == LLViewerTexture::BOOST_NONE && !animated && !close_to_camera)
+    { // conditionally reset max virtual size for unboosted LOD_TEXTURES
+      // this is an alternative to decaying mMaxVirtualSize over time
+      // that keeps textures from continously downrezzing and uprezzing in the background
+
+        if ((on_screen && use_auto_on_screen) || LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_OUT_OF_SCREEN ||
+            (!on_screen && (LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_ON_SCREEN || use_auto_off_screen)))
+        {
+            imagep->mMaxVirtualSize = 0.f;
+        }
+    }
+
+    imagep->addTextureStats(max_vsize);
+}
+
+/*
+{
+    static LLCachedControl<F32> texture_scale_min(gSavedSettings, "TextureScaleMinAreaFactor", 0.0095f);
+    static LLCachedControl<F32> texture_scale_max(gSavedSettings, "TextureScaleMaxAreaFactor", 25.f);
+    static LLCachedControl<bool> auto_scale_on_screen_textures(gSavedSettings, "AutoOnScreenTexture", true);
+    static LLCachedControl<bool> auto_scale_off_screen_textures(gSavedSettings, "AutoOffScreenTexture", true);
+    static LLCachedControl<bool> near_off_screen_textures_close_to_camera_quality(gSavedSettings, "NearOffScreenTextureQuality", true);
+
+    F32 max_vsize = 0.f;
+    F32 max_importance_to_camera = 0.0f;
+    bool close_to_camera = false;
+    bool on_screen = false;
+    bool in_octree = false;
+    bool animated = imagep->getAnimated();
+    bool has_media = false;
+    bool protect_check = false;
+    F32 vsize;
+
+    bool use_auto_on_screen = auto_scale_on_screen_textures && !mCameraMoveFast && !mCameraTurn;
+    bool use_auto_off_screen = auto_scale_on_screen_textures && !mCameraMoveFast && !mCameraTurn;
+
+    U32 face_count = 0;
+    U32 max_faces_to_check = 1024;
+    //F32 radius;
+    //F32 cos_angle_to_view_dir;
+    LLFace* face = NULL;
+
+    // get adjusted bias based on image resolution
+    LLImageGL* img = imagep->getGLTexture();
+    F32 max_discard = F32(img ? img->getMaxDiscardLevel() : MAX_DISCARD_LEVEL);
+    F32 bias = llclamp(max_discard - 2.f, 1.f, LLViewerTexture::sDesiredDiscardBias);
+
+    // convert bias into a vsize scaler
+    bias = (F32) 1.0f / llroundf(powf(4, bias - 1.f)); // Pre-divide to allow for faster math
+    F32 min_virtual_size = (F32)imagep->getMinTexelsPerImage(); // Store the min and max virtual sizes
+    F32 max_virtual_size = (F32)imagep->getMaxTexelsPerImage();
+
+    LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
+    for (U32 i = 0; i < LLRender::NUM_TEXTURE_CHANNELS; ++i)
+    {
+        face_count += imagep->getNumFaces(i);
+        S32 faces_to_check = (face_count > max_faces_to_check) ? 0 : imagep->getNumFaces(i);
+
+        for (S32 fi = 0; fi < faces_to_check; ++fi)
+        {
+            face = (*(imagep->getFaceList(i)))[fi];
+
+            if (face && face->getViewerObject())
+            {
+                
+                if ((gFrameCount - face->mLastTextureUpdate) > 10)
+                { // only call getTextureVirtualSize at most once every 10 frames for a given face
+                  // this helps eliminate redundant calls to getTextureVirtualSize for faces that have multiple textures
+                  // assigned to them, such as is the case with GLTF materials or Blinn-Phong materials
+                    // Pass in tru that mInFrutum updated by the call
+                    face->getTextureVirtualSize(true); // Update the virtual Texture size, passing true that we want to 
+                    face->mLastTextureUpdate = gFrameCount;
+                }
+
+                animated |= face->isState(LLFace::TEXTURE_ANIM);
+                has_media |= face->hasMedia();
+                in_octree |= face->mInFrustum;
+                on_screen |= face->mInCameraFrustum;
+                close_to_camera |= face->mCloseToCamera;
+
+                // Pre-calcuate check which will be used a couple of times
+                protect_check = (close_to_camera | face->isState(LLFace::TEXTURE_ANIM) | face->hasMedia());
+
+                // Check if the face is in the octree frustum or, face that has meda/animation/close to camera
+                if (face->mInFrustum || protect_check)
+                {
+                    // If texture is inside the camera view frustum, then
+                    if (face->mInCameraFrustum)
+                    {
+                        // Get the actual virtual size or the min virtual size of the texture
+                        vsize = llmax(face->getTextureVirtualSize(), min_virtual_size);
+                    }
+                    // Else the texture is off screen, then
+                    else
+                    {
+                        vsize = min_virtual_size;
+                    }
+                    max_importance_to_camera = llmax(max_importance_to_camera, face->mImportanceToCamera);
+                }
+                else
+                {
+                    vsize = 0.0f;
+                }
+
+                // apply bias to offscreen faces all the time, but only to onscreen faces when bias is large
+                // use mImportanceToCamera to make bias switch a bit more gradual
+                if (!protect_check && (!face->mInFrustum || LLViewerTexture::sDesiredDiscardBias > 1.9f + face->mImportanceToCamera / 2.f))
+                {
+                    vsize *= bias;
+                }
+
+                max_vsize = llmax(max_vsize, vsize);
+
+                // addTextureStats limits size to sMaxVirtualSize
+                if (max_vsize >= max_virtual_size
+                    && (on_screen || LLViewerTexture::sDesiredDiscardBias <= BIAS_TRS_ON_SCREEN))
+                {
+                    break;
+                }
+            }
+        }
+
+        if (max_vsize >= max_virtual_size
+            && (on_screen || LLViewerTexture::sDesiredDiscardBias <= BIAS_TRS_ON_SCREEN))
+        {
+            break;
+        }
+    }
+
+    imagep->setAnimated(animated);
+    imagep->setCloseToCamera(close_to_camera);
+
+    if (imagep->getType() == LLViewerTexture::LOD_TEXTURE && imagep->getBoostLevel() == LLViewerTexture::BOOST_NONE)
+    { // conditionally reset max virtual size for unboosted LOD_TEXTURES
+      // this is an alternative to decaying mMaxVirtualSize over time
+      // that keeps textures from continously downrezzing and uprezzing in the background
+
+        if ((in_octree && use_auto_on_screen) || LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_OUT_OF_SCREEN ||
+            (!in_octree && (LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_ON_SCREEN || use_auto_off_screen)))
+        {
+            imagep->mMaxVirtualSize = 0.f;
+        }
+    }
+
+
+    //LL_INFOS() << "Image: " << imagep->getID().asString() << " VS1:" << max_vsize << " In Frustum: " << (on_screen ? "Y" : "N") << LL_ENDL;
+    if (LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_ON_SCREEN)
+    {
+        //if (!on_screen && )
+
+    }
+    else
+    {
+
+    }
+
+    if (face_count > max_faces_to_check)
+    { // this texture is used in so many places we should just boost it and not bother checking its vsize
+      // this is especially important because the above is not time sliced and can hit multiple ms for a single texture
+        max_vsize = max_virtual_size;
+        imagep->setBias(1.0f);
+    }
+
+    imagep->addTextureStats(max_vsize);
+}
+*/
 void LLViewerTextureList::updateImageDecodePriority(LLViewerFetchedTexture* imagep, bool flush_images)
 {
     llassert(!gCubeSnapshot);
 
-    constexpr F32 BIAS_TRS_OUT_OF_SCREEN = 1.5f;
-    constexpr F32 BIAS_TRS_ON_SCREEN = 1.f;
+    static LLCachedControl<bool> auto_scale_textures(gSavedSettings, "AutoScaleTextures", true);
 
-    if (imagep->getBoostLevel() < LLViewerFetchedTexture::BOOST_HIGH)  // don't bother checking face list for boosted textures
+    if (auto_scale_textures && imagep->getBoostLevel() < LLViewerFetchedTexture::BOOST_HIGH)
+    {
+        updateVirtualSizeLowVRAM(imagep);
+    }
+    else if (imagep->getBoostLevel() < LLViewerFetchedTexture::BOOST_HIGH)  // don't bother checking face list for boosted textures
     {
         static LLCachedControl<F32> texture_scale_min(gSavedSettings, "TextureScaleMinAreaFactor", 0.0095f);
         static LLCachedControl<F32> texture_scale_max(gSavedSettings, "TextureScaleMaxAreaFactor", 25.f);
@@ -1156,7 +1623,9 @@ F32 LLViewerTextureList::updateImagesCreateTextures(F32 max_time)
             LLImageGL* img = image->getGLTexture();
             if (img && img->getHasGLTexture())
             {
-                img->scaleDown(image->getDesiredDiscardLevel());
+                S32 target_discard = llmin(image->getDesiredDiscardLevel(), image->getMaxDiscardLevel());
+                target_discard = llmin(target_discard, MAX_DISCARD_LEVEL);
+                img->scaleDown(target_discard);
             }
 
             image->mDownScalePending = false;

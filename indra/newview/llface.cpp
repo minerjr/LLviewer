@@ -70,9 +70,15 @@ static LLStaticHashedString sTextureIndexIn("texture_index_in");
 static LLStaticHashedString sColorIn("color_in");
 
 bool LLFace::sSafeRenderSelect = true; // false
-
+bool LLFace::sUpdateAutoScaleTextures = false; // Default the update auto scale textues flag to false
 
 #define DOTVEC(a,b) (a.mV[0]*b.mV[0] + a.mV[1]*b.mV[1] + a.mV[2]*b.mV[2])
+
+const S8 FACE_IMPORTANCE_LEVEL = 4 ;
+const F32 FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[FACE_IMPORTANCE_LEVEL][2] = //{distance, importance_weight}
+{{16.1f, 1.0f}, {32.1f, 0.5f}, {48.1f, 0.2f}, {96.1f, 0.05f} } ;
+const F32 FACE_IMPORTANCE_TO_CAMERA_OVER_ANGLE[FACE_IMPORTANCE_LEVEL][2] =    //{cos(angle), importance_weight}
+{{0.985f /*cos(10 degrees)*/, 1.0f}, {0.94f /*cos(20 degrees)*/, 0.8f}, {0.866f /*cos(30 degrees)*/, 0.64f}, {0.0f, 0.36f}} ;
 
 /*
 For each vertex, given:
@@ -174,6 +180,8 @@ void LLFace::init(LLDrawable* drawablep, LLViewerObject* objp)
     mTexExtents[1].set(1, 1);
     mHasMedia = false ;
     mIsMediaAllowed = true;
+    mInFrustum = false;
+    mCloseToCamera = false;
 }
 
 void LLFace::destroy()
@@ -2210,6 +2218,10 @@ bool LLFace::calcPixelArea(F32& cos_angle_to_view_dir, F32& radius)
 
     LL_PROFILE_ZONE_SCOPED_CATEGORY_FACE;
 
+    // Flag for auto scale textures and near off screen texture close to camera quality settings
+    static LLCachedControl<bool> near_off_screen_textures_close_to_camera_quality(gSavedSettings, "NearOffScreenTextureQuality", true);
+    static LLCachedControl<bool> auto_scale_textures(gSavedSettings, "AutoScaleTextures", true);
+
     //get area of circle around face
     LLVector4a center;
     LLVector4a size;
@@ -2277,7 +2289,12 @@ bool LLFace::calcPixelArea(F32& cos_angle_to_view_dir, F32& radius)
         {
             // no rigged extents, zero out bounding box and skip update
             mRiggedExtents[0] = mRiggedExtents[1] = LLVector4a(0.f, 0.f, 0.f);
-
+            if (sUpdateAutoScaleTextures && auto_scale_textures)
+            {
+                mCloseToCamera = false; // Face cannot be close to the camera
+                mInCameraFrustum = false; // In camera frustum is also false
+            }
+			
             return false;
         }
 
@@ -2324,7 +2341,28 @@ bool LLFace::calcPixelArea(F32& cos_angle_to_view_dir, F32& radius)
     LLVector4a x_axis;
     x_axis.load3(camera->getXAxis().mV);
     cos_angle_to_view_dir = lookAt.dot3(x_axis).getF32();
+    
+    if (sUpdateAutoScaleTextures && auto_scale_textures)
+    {
+        // Calculate the close to camera (based upon the mImportanceToCamera) as closest distance (16) 
+        // multiplied by the (1.0 + (0.0 to 1.0) based on sDiscardBias
+        // so overall 16 to 32 meters. Used to shield textues from bias when 
+        // bias is > 1.0f
 
+        // Pre check if the calculated cos angle is greate then the camera's half cos fov
+        bool in_frustum_angle = cos_angle_to_view_dir > camera->getCosHalfFov();
+        if (near_off_screen_textures_close_to_camera_quality)
+        {
+            mCloseToCamera = dist <= (FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[0][0]) * (1.0f + (0.33f * (4.0f - LLViewerTexture::sDesiredDiscardBias)));
+        }
+        else
+        {
+            mCloseToCamera = in_frustum_angle && dist <= (FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[0][0]) * (1.0f + (0.33f * (4.0f - LLViewerTexture::sDesiredDiscardBias)));
+        }
+
+        // Check if the object distance's is between 0 and the far plane and the the image is and positive cos angle is in camera frustum
+        mInCameraFrustum = (near_off_screen_textures_close_to_camera_quality && mCloseToCamera) || (dist >= 0.0f && dist <= camera->getFar() && in_frustum_angle);
+    }
     //if has media, check if the face is out of the view frustum.
     if(hasMedia())
     {
@@ -2353,6 +2391,11 @@ bool LLFace::calcPixelArea(F32& cos_angle_to_view_dir, F32& radius)
     {
         cos_angle_to_view_dir = 1.0f ;
         mImportanceToCamera = 1.0f ;
+        if (sUpdateAutoScaleTextures && auto_scale_textures)
+        {
+            mCloseToCamera = true;
+            mInCameraFrustum = true;
+        }
     }
     else
     {
@@ -2391,33 +2434,29 @@ F32 LLFace::adjustPartialOverlapPixelArea(F32 cos_angle_to_view_dir, F32 radius 
     return 1.0f ;
 }
 
-const S8 FACE_IMPORTANCE_LEVEL = 4 ;
-const F32 FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[FACE_IMPORTANCE_LEVEL][2] = //{distance, importance_weight}
-    {{16.1f, 1.0f}, {32.1f, 0.5f}, {48.1f, 0.2f}, {96.1f, 0.05f} } ;
-const F32 FACE_IMPORTANCE_TO_CAMERA_OVER_ANGLE[FACE_IMPORTANCE_LEVEL][2] =    //{cos(angle), importance_weight}
-    {{0.985f /*cos(10 degrees)*/, 1.0f}, {0.94f /*cos(20 degrees)*/, 0.8f}, {0.866f /*cos(30 degrees)*/, 0.64f}, {0.0f, 0.36f}} ;
-
 //static
 F32 LLFace::calcImportanceToCamera(F32 cos_angle_to_view_dir, F32 dist)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_FACE;
+    static LLCachedControl<bool> fast_move_lower_texture_quality(gSavedSettings, "FastMoveLowTexture", true);
+    static LLCachedControl<bool> auto_scale_textures(gSavedSettings, "AutoScaleTextures", true);
     F32 importance = 0.f ;
+	LLViewerCamera* camera = LLViewerCamera::getInstance();
 
-    if(cos_angle_to_view_dir > LLViewerCamera::getInstance()->getCosHalfFov() &&
-        dist < FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[FACE_IMPORTANCE_LEVEL - 1][0])
-    {
-        LLViewerCamera* camera = LLViewerCamera::getInstance();
+    if(cos_angle_to_view_dir > camera->getCosHalfFov() &&
+        dist < FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[FACE_IMPORTANCE_LEVEL - 1][0] * (1.0f + (0.33f * (4.0f - LLViewerTexture::sDesiredDiscardBias))))
+    {        
         F32 camera_moving_speed = camera->getAverageSpeed() ;
         F32 camera_angular_speed = camera->getAverageAngularSpeed();
 
-        if(camera_moving_speed > 10.0f || camera_angular_speed > 1.0f)
+        if((!auto_scale_textures || (auto_scale_textures && fast_move_lower_texture_quality)) && (camera_moving_speed > 10.0f || camera_angular_speed > 1.0f))
         {
             //if camera moves or rotates too fast, ignore the importance factor
             return 0.f ;
         }
 
         S32 i = 0 ;
-        for(i = 0; i < FACE_IMPORTANCE_LEVEL && dist > FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[i][0]; ++i);
+        for(i = 0; i < FACE_IMPORTANCE_LEVEL && dist > FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[i][0] * (1.0f + (0.33f * (4.0f - LLViewerTexture::sDesiredDiscardBias))); ++i);
         i = llmin(i, FACE_IMPORTANCE_LEVEL - 1) ;
         F32 dist_factor = FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[i][1] ;
 

@@ -2082,6 +2082,12 @@ bool LLTextureCache::writeToFastCache(LLUUID image_id, S32 id, LLPointer<LLImage
         ++i ;
     }
 
+    if (discardlevel + i> MAX_DISCARD_LEVEL)
+    {
+        // Texture is valid, but too large to fit into fastcache 1K + texture
+        return true;
+    }
+
     if(i)
     {
         w >>= i;

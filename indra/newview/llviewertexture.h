@@ -179,6 +179,9 @@ public:
     typedef std::vector<MaterialEntry> material_list_t;
     material_list_t   mMaterialList;  // reverse pointer pointing to LL::GLTF::Materials using this image as texture
 
+    bool getAnimated() { return mAnimated; } // Flag for texture which are animated, used to prevent bias/downscaling
+    void setAnimated(bool value) { mAnimated = value; }
+
 protected:
     void cleanup() ;
     void init(bool firstinit) ;
@@ -213,6 +216,8 @@ protected:
     LL::WorkQueue::weak_t mMainQueue;
     LL::WorkQueue::weak_t mImageQueue;
 
+    bool mAnimated; // Flag for if the texture is used for an face's texture animation (Used to make sure it does not down scale)
+
 public:
     static const U32 sCurrentFileVersion;
     static S32 sImageCount;
@@ -220,12 +225,15 @@ public:
     static S32 sAuxCount;
     static LLFrameTimer sEvaluationTimer;
     static F32 sDesiredDiscardBias;
+    static F32 sPrevDesiredDiscardBias; // Store the previous desired discard bias
     static U32 sBiasTexturesUpdated;
     static S32 sMaxSculptRez ;
     static U32 sMinLargeImageSize ;
     static U32 sMaxSmallImageSize ;
     static bool sFreezeImageUpdates;
     static F32  sCurrentTime ;
+    static bool sCameraTurn; // Store if the camera is turning or moving fast
+    static bool sCameraMoveFast;
 
     // estimated free memory for textures, by bias calculation
     static F32 sFreeVRAMMegabytes;
@@ -409,6 +417,19 @@ public:
     void        setInFastCacheList(bool in_list) { mInFastCacheList = in_list; }
     bool        isInFastCacheList() { return mInFastCacheList; }
 
+    
+    bool        getCloseToCamera() const {return mCloseToCamera ;} // Get close to camera value
+    void        setCloseToCamera(bool value) {mCloseToCamera = value ;} // Set the close to camera value (true or false)
+    bool        getInFrustum() const {return mInFrustum ;} // Get in frustum value
+    void        setInFrustum(bool value) {mInFrustum = value ;} // Set the in frustum value (true or false)
+    F32         getBias() const { return mBias; } // Get the applied bias value to the texture
+    void        setBias(F32 value) { mBias = value; } // Set the applied bias value for the texture
+    F32         getImportanceToCamera() const { return mImportanceToCamera; }
+    void        setImportanceToCamera(F32 value) { mImportanceToCamera = value; }
+    F32         getMaxTexelsPerImage() { return (F32)(mFullWidth * mFullHeight); }
+    F32         getMinTexelsPerImage() { return mMinTexelsPerImage; }
+    void        updateMinTexelsPerImage(); // Update the min texels per image, so only change when the mMaxDiscardLevel changes
+
     /*virtual*/bool  isActiveFetching() override; //is actively in fetching by the fetching pipeline.
 
     virtual bool scaleDown() { return false; };
@@ -505,6 +526,13 @@ protected:
     bool   mForSculpt ; //a flag if the texture is used as sculpt data.
     bool   mIsFetched ; //is loaded from remote or from cache, not generated locally.
 
+    bool mCloseToCamera; // Is the any face close to the camera
+    bool mInFrustum; // Is any face any face in the view frustum
+	F32 mImportanceToCamera; // Textures can now store the importance to camera
+    F32 mBias; // Per texture bias
+    S32 mMaxDiscardOffset; // Offset of how far the mFullWidth/mFullHeight is from the Max Texture Size(2048) basis
+    F32 mMinTexelsPerImage; // Store the min TexelsPerImage (min virtual size)
+
 public:
     static F32 sMaxVirtualSize; //maximum possible value of mMaxVirtualSize
     static LLPointer<LLViewerFetchedTexture> sMissingAssetImagep;   // Texture to show for an image asset that is not in the database
@@ -535,12 +563,14 @@ public:
     S8 getType() const override;
     // Process image stats to determine priority/quality requirements.
     void processTextureStats() override;
+    void processTextureStatsLowVRAM();
     bool isUpdateFrozen() ;
 
     bool scaleDown() override;
 
 private:
     void init(bool firstinit) ;
+    S32 mScaleDownCount; // scale down counter, to prevent textures from down scaling too fast
 };
 
 //

@@ -638,9 +638,17 @@ bool LLImageGL::setSize(S32 width, S32 height, S32 ncomponents, S32 discard_leve
                 height >>= 1;
             }
 
-            if(discard_level > 0)
+            // If the discard level is greater then max discard level, use the mMaxDiscardLevel as is
+            if(discard_level > 0 )//&& discard_level <= MAX_DISCARD_LEVEL )
             {
-                mMaxDiscardLevel = llmax(mMaxDiscardLevel, (S8)discard_level);
+                if (discard_level <= MAX_DISCARD_LEVEL)
+                {
+                    mMaxDiscardLevel = llmax(mMaxDiscardLevel, (S8)discard_level);
+                }
+                else
+                {
+                    LL_WARNS() << "Texture asked to set to invalid discard level: " << discard_level << " Possible fastcache issue with 2K textures." << LL_ENDL;
+                }
             }
         }
         else
