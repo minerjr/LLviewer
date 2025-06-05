@@ -181,6 +181,9 @@ void LLFace::init(LLDrawable* drawablep, LLViewerObject* objp)
     mHasMedia = false ;
     mIsMediaAllowed = true;
     mInFrustum = false;
+    // Init in camera frustum and virtual texture size
+    mInCameraFrustum = false;
+    mInCameraVirtualSize = 0.0f;
     mCloseToCamera = false;
 }
 
@@ -2450,7 +2453,7 @@ F32 LLFace::calcImportanceToCamera(F32 cos_angle_to_view_dir, F32 dist)
     static LLCachedControl<bool> fast_move_lower_texture_quality(gSavedSettings, "FastMoveLowTexture", true);
     static LLCachedControl<bool> auto_scale_textures(gSavedSettings, "AutoScaleTextures", true);
     F32 importance = 0.f ;
-	LLViewerCamera* camera = LLViewerCamera::getInstance();
+    LLViewerCamera* camera = LLViewerCamera::getInstance();
 
     if(cos_angle_to_view_dir > camera->getCosHalfFov() &&
         dist < FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[FACE_IMPORTANCE_LEVEL - 1][0] * (1.0f + (0.33f * (4.0f - LLViewerTexture::sDesiredDiscardBias))))

@@ -148,7 +148,7 @@ public:
     // - updates desired discard level
     // - cleans up textures that haven't been referenced in awhile
     void updateImageDecodePriority(LLViewerFetchedTexture* imagep, bool flush_images = true);
-    void updateVirtualSize(LLViewerFetchedTexture* imagep);
+    // Update for targeting lower VRAM usage
     void updateVirtualSizeLowVRAM(LLViewerFetchedTexture* imagep);
 
 private:

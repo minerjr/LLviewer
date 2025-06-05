@@ -275,10 +275,14 @@ public:
 
     // true if face was recently in the main camera frustum according to LLViewerTextureList updates
     bool mInFrustum = false;
-    bool mInCameraFrustum = false;
-    F32 mInCameraVirtualSize = 0.0f;
+    // Isolated texture status seperated from the normal values which are based not on camera frustum, but
+    // Octree and Occulsion (which covers more area then what is visible on screen.)
+    bool mInCameraFrustum = false; // Begin with the in camera frumtum as false
+    F32 mInCameraVirtualSize = 0.0f; // As well the in camera virtual size is also 0.
     bool mCloseToCamera = false; // Is the face close to the camera
-    static bool sUpdateAutoScaleTextures; // Static used to flag that the updates to the auto scale texture values should happen
+    // Static used to flag that the updates to the auto scale texture values should happen.
+    // Used to isolate in camera texture sizes from the changes from the shadow and other cameras.
+    static bool sUpdateAutoScaleTextures;
     // value of gFrameCount the last time the face was touched by LLViewerTextureList::updateImageDecodePriority
     U32 mLastTextureUpdate = 0;
 
