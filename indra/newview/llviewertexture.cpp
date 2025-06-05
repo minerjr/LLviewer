@@ -110,6 +110,7 @@ bool LLViewerTexture::sCameraTurn = false; // Default the camera turn and move f
 bool LLViewerTexture::sCameraMoveFast = false;
 static const F64 log_2 = log(2.0);
 static const F64 log_4 = log(4.0);
+constexpr S32 SCALE_DOWN_FRAME_DELAY = 10;
 
 //----------------------------------------------------------------------------------------------
 //namespace: LLViewerTextureAccess
@@ -2959,6 +2960,7 @@ LLViewerLODTexture::LLViewerLODTexture(const std::string& url, FTType f_type, co
 void LLViewerLODTexture::init(bool firstinit)
 {
     mTexelsPerImage = 64*64;
+    mScaleDownCount = SCALE_DOWN_FRAME_DELAY; // Set the inital scale down count to the constexpr value (10 frames)
 }
 
 //virtual
@@ -3010,16 +3012,27 @@ void LLViewerLODTexture::processTextureStatsLowVRAM()
         mDesiredDiscardLevel = llmin(mMinDesiredDiscardLevel, (S8)(MAX_DISCARD_LEVEL + 1));
         mDesiredDiscardLevel = llmin(mDesiredDiscardLevel, (S32)mLoadedCallbackDesiredDiscardLevel);
 
-        if (use_auto_off_screen)
+        if (use_auto_off_screen && mBoostLevel < LLGLTexture::BOOST_AVATAR_BAKED)
         {
             S32 current_discard = getDiscardLevel();
-            if (mBoostLevel < LLGLTexture::BOOST_AVATAR_BAKED)
+            if (current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
             {
-                if (current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
-                { // should scale down
+                if (mScaleDownCount <= 0)
+                {
+                    // should scale down
                     scaleDown();
+                    mScaleDownCount = SCALE_DOWN_FRAME_DELAY;
+                }
+                else
+                {
+                    mScaleDownCount--;
                 }
             }
+            else
+            {
+                mScaleDownCount = SCALE_DOWN_FRAME_DELAY;
+            }
+            
         }
     }
     else if (!mFullWidth  || !mFullHeight)
@@ -3076,8 +3089,17 @@ void LLViewerLODTexture::processTextureStatsLowVRAM()
         if (mBoostLevel < LLGLTexture::BOOST_AVATAR_BAKED)
         {
             if (current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
-            { // should scale down
-                scaleDown();
+            {
+                if (mScaleDownCount <= 0)
+                {
+                    // should scale down
+                    scaleDown();
+                    mScaleDownCount = SCALE_DOWN_FRAME_DELAY;
+                }
+                else
+                {
+                    mScaleDownCount--;
+                }
             }
         }
 

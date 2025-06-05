@@ -819,12 +819,12 @@ LLViewerFetchedTexture* LLViewerTextureList::createImage(const LLUUID &image_id,
         //if this texture should be set to NO_DELETE, call setNoDelete() afterwards.
         imagep->forceActive() ;
     }
+    // Put in check to see if the texture's a valid (Between 0 and MAX_DISCARD_LEVEL), then allow it to be added
     S32 current_discard = imagep->getDiscardLevel();
     if (current_discard > 0 && current_discard <= MAX_DISCARD_LEVEL)
     {
         mFastCacheList.insert(imagep);
         imagep->setInFastCacheList(true);
-
     }
     return imagep ;
 }
