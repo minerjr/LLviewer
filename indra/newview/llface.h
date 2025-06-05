@@ -123,8 +123,8 @@ public:
     F32             getVirtualSize() const { return mVSize; }
     F32             getPixelArea() const { return mPixelArea; }
     bool            getCloseToCamera() const { return mCloseToCamera; }
-    void            setTextureVirtualSize(F32 value) { mTextureVSize = value; }
-    F32             getTextureVirtualSize() const { return mTextureVSize; }
+    void            setInCameraVirtualSize(F32 value) { mInCameraVirtualSize = value; }
+    F32             getInCameraVirtualSize() const { return mInCameraVirtualSize; }
 
     S32             getIndexInTex(U32 ch) const      { llassert(ch < LLRender::NUM_TEXTURE_CHANNELS); return mIndexInTex[ch]; }
     void            setIndexInTex(U32 ch, S32 index) { llassert(ch < LLRender::NUM_TEXTURE_CHANNELS); mIndexInTex[ch] = index; }
@@ -276,9 +276,9 @@ public:
     // true if face was recently in the main camera frustum according to LLViewerTextureList updates
     bool mInFrustum = false;
     bool mInCameraFrustum = false;
+    F32 mInCameraVirtualSize = 0.0f;
     bool mCloseToCamera = false; // Is the face close to the camera
     static bool sUpdateAutoScaleTextures; // Static used to flag that the updates to the auto scale texture values should happen
-    F32 mTextureVSize = 0.0f; // Texture Virtual Size get from LLViewerTextureListDecode
     // value of gFrameCount the last time the face was touched by LLViewerTextureList::updateImageDecodePriority
     U32 mLastTextureUpdate = 0;
 

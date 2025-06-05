@@ -2166,6 +2166,10 @@ F32 LLFace::getTextureVirtualSize()
 
     if (mPixelArea < F_ALMOST_ZERO || !in_frustum)
     {
+        if (sUpdateAutoScaleTextures)
+        {
+            mInCameraVirtualSize = 0.0f;
+        }
         setVirtualSize(0.f) ;
         return 0.f;
     }
@@ -2193,6 +2197,11 @@ F32 LLFace::getTextureVirtualSize()
     }
 
     face_area = LLFace::adjustPixelArea(mImportanceToCamera, face_area);
+    if (sUpdateAutoScaleTextures)
+    {
+        mInCameraVirtualSize = face_area;
+    }
+
     if(face_area > LLViewerTexture::sMinLargeImageSize) //if is large image, shrink face_area by considering the partial overlapping.
     {
         if(mImportanceToCamera > LEAST_IMPORTANCE_FOR_LARGE_IMAGE && mTexture[LLRender::DIFFUSE_MAP].notNull() && mTexture[LLRender::DIFFUSE_MAP]->isLargeImage())

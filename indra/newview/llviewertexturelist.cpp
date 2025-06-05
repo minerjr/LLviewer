@@ -1079,7 +1079,9 @@ void LLViewerTextureList::updateVirtualSizeLowVRAM(LLViewerFetchedTexture* image
     static LLCachedControl<bool> near_off_screen_textures_close_to_camera_quality(gSavedSettings, "NearOffScreenTextureQuality", true);
 
     F32 max_vsize = 0.f;
+    F32 max_vsize_in_camera = 0.0f;
     bool on_screen = false;
+    bool in_camera_frustum = false;
     // Get the existing animated flag, may stop being referenced, but then used again, so protect textures used for animations
     bool animated = imagep->getAnimated();
     bool close_to_camera = false;
@@ -1118,14 +1120,17 @@ void LLViewerTextureList::updateVirtualSizeLowVRAM(LLViewerFetchedTexture* image
                   // this helps eliminate redundant calls to calcPixelArea for faces that have multiple textures
                   // assigned to them, such as is the case with GLTF materials or Blinn-Phong materials
                     face->mInFrustum = face->calcPixelArea(cos_angle_to_view_dir, radius);
+                    face->getTextureVirtualSize(); // Try to update the texture virtual size
                     face->mLastTextureUpdate = gFrameCount;
                 }
 
                 F32 vsize = face->getPixelArea();
+                F32 vsize_in_camera = face->getInCameraVirtualSize(); // face->getPixelArea();
 
                 on_screen |= face->mInFrustum;
                 animated |= face->isState(LLFace::TEXTURE_ANIM);
                 close_to_camera |= face->mCloseToCamera;
+                in_camera_frustum |= face->mInCameraFrustum;
 
                 // Scale desired texture resolution higher or lower depending on texture scale
                 //
@@ -1142,7 +1147,7 @@ void LLViewerTextureList::updateVirtualSizeLowVRAM(LLViewerFetchedTexture* image
                 min_scale = llclamp(min_scale * min_scale, texture_scale_min(), texture_scale_max());
                 vsize /= min_scale;
 
-                if (!close_to_camera || animated)
+                if (!close_to_camera && !animated)
                 {
                 // apply bias to offscreen faces all the time, but only to onscreen faces when bias is large
                 // use mImportanceToCamera to make bias switch a bit more gradual
@@ -1157,14 +1162,15 @@ void LLViewerTextureList::updateVirtualSizeLowVRAM(LLViewerFetchedTexture* image
                 }
 
                 // boost resolution of textures that are important to the camera
-                if (face->mInFrustum && face->mInCameraFrustum)
+                if (face->mInFrustum)
                 {
                     static LLCachedControl<F32> texture_camera_boost(gSavedSettings, "TextureCameraBoost", 8.f);
                     vsize *= llmax(face->mImportanceToCamera*texture_camera_boost, 1.f);
                 }
 
+                max_vsize_in_camera = llmax(max_vsize_in_camera, vsize_in_camera); // Store the in camera virtual size
                 max_vsize = llmax(max_vsize, vsize);
-
+                LL_INFOS() << "Texture " << imagep->getID() << " VSizeOrg: " << max_vsize << " VSizeNew:" << max_vsize_in_camera << " InFrustum:" << (face->mInFrustum ? "Y" : "N") << " InCameraFrustum:" << (face->mInCameraFrustum ? "Y" : "N") << LL_ENDL;
                 // addTextureStats limits size to sMaxVirtualSize
                 if (max_vsize >= LLViewerFetchedTexture::sMaxVirtualSize
                     && (on_screen || LLViewerTexture::sDesiredDiscardBias <= BIAS_TRS_ON_SCREEN))
@@ -1174,17 +1180,17 @@ void LLViewerTextureList::updateVirtualSizeLowVRAM(LLViewerFetchedTexture* image
             }
         }
 
-        // If the face has a 
-        if (animated)
-        {
-            imagep->setAnimated(true);
-        }
-
         if (max_vsize >= LLViewerFetchedTexture::sMaxVirtualSize
             && (on_screen || LLViewerTexture::sDesiredDiscardBias <= BIAS_TRS_ON_SCREEN))
         {
             break;
         }
+    }
+
+    // If the face is used for a texture animation, we want to protect it, so track if it was used at some point
+    if (animated)
+    {
+        imagep->setAnimated(true);
     }
 
     if (face_count > max_faces_to_check)
@@ -1198,14 +1204,15 @@ void LLViewerTextureList::updateVirtualSizeLowVRAM(LLViewerFetchedTexture* image
       // this is an alternative to decaying mMaxVirtualSize over time
       // that keeps textures from continously downrezzing and uprezzing in the background
 
-        if ((on_screen && use_auto_on_screen) || LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_OUT_OF_SCREEN ||
-            (!on_screen && (LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_ON_SCREEN || use_auto_off_screen)))
+        if ((on_screen && ((in_camera_frustum && use_auto_on_screen)) || LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_OUT_OF_SCREEN ||
+            (!on_screen && (LLViewerTexture::sDesiredDiscardBias > BIAS_TRS_ON_SCREEN || (!in_camera_frustum && use_auto_off_screen)))
         {
             imagep->mMaxVirtualSize = 0.f;
         }
     }
 
-    imagep->addTextureStats(max_vsize);
+    imagep->addTextureStats(max_vsize_in_camera);
+    //imagep->addTextureStats(max_vsize);
 }
 
 /*
