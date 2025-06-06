@@ -1151,13 +1151,15 @@ void LLViewerTextureList::updateVirtualSizeLowVRAM(LLViewerFetchedTexture* image
                 {
                 // apply bias to offscreen faces all the time, but only to onscreen faces when bias is large
                 // use mImportanceToCamera to make bias switch a bit more gradual
-                if (!face->mInFrustum || LLViewerTexture::sDesiredDiscardBias > 1.9f + face->mImportanceToCamera / 2.f)
+                if (!face->mInFrustum || !face->mInCameraFrustum || LLViewerTexture::sDesiredDiscardBias > 1.9f + face->mImportanceToCamera / 2.f)
                 {
                     vsize *= bias;
+                    vsize_in_camera *= bias;
                 }
                     else if (!face->mInCameraFrustum)
                     {
                         vsize *= bias;
+                        vsize_in_camera *= bias;
                     }
                 }
 
@@ -1533,6 +1535,11 @@ F32 LLViewerTextureList::updateImagesLoadingFastCache(F32 max_time)
         enditer = iter;
         LLViewerFetchedTexture *imagep = *curiter;
         imagep->loadFromFastCache();
+
+        if (timer.getElapsedTimeF32() > max_time)
+        {
+            break;
+        }
     }
     mFastCacheList.erase(mFastCacheList.begin(), enditer);
     return timer.getElapsedTimeF32();

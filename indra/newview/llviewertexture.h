@@ -179,9 +179,6 @@ public:
     typedef std::vector<MaterialEntry> material_list_t;
     material_list_t   mMaterialList;  // reverse pointer pointing to LL::GLTF::Materials using this image as texture
 
-    bool getAnimated() { return mAnimated; } // Flag for texture which are animated, used to prevent bias/downscaling
-    void setAnimated(bool value) { mAnimated = value; }
-
 protected:
     void cleanup() ;
     void init(bool firstinit) ;
@@ -215,8 +212,6 @@ protected:
 
     LL::WorkQueue::weak_t mMainQueue;
     LL::WorkQueue::weak_t mImageQueue;
-
-    bool mAnimated; // Flag for if the texture is used for an face's texture animation (Used to make sure it does not down scale)
 
 public:
     static const U32 sCurrentFileVersion;
@@ -422,6 +417,8 @@ public:
     void        setCloseToCamera(bool value) {mCloseToCamera = value ;} // Set the close to camera value (true or false)
     bool        getInFrustum() const {return mInFrustum ;} // Get in frustum value
     void        setInFrustum(bool value) {mInFrustum = value ;} // Set the in frustum value (true or false)
+    bool        getAnimated() { return mAnimated; }              // Flag for texture which are animated, used to prevent bias/downscaling
+    void        setAnimated(bool value) { mAnimated = value; }
     F32         getBias() const { return mBias; } // Get the applied bias value to the texture
     void        setBias(F32 value) { mBias = value; } // Set the applied bias value for the texture
     F32         getImportanceToCamera() const { return mImportanceToCamera; }
@@ -532,6 +529,7 @@ protected:
     F32 mBias; // Per texture bias
     S32 mMaxDiscardOffset; // Offset of how far the mFullWidth/mFullHeight is from the Max Texture Size(2048) basis
     F32 mMinTexelsPerImage; // Store the min TexelsPerImage (min virtual size)
+    bool mAnimated; // Flag for if the texture is used for an face's texture animation (Used to make sure it does not down scale)
 
 public:
     static F32 sMaxVirtualSize; //maximum possible value of mMaxVirtualSize

@@ -3015,7 +3015,7 @@ void LLViewerLODTexture::processTextureStatsLowVRAM()
         if (use_auto_off_screen && mBoostLevel < LLGLTexture::BOOST_AVATAR_BAKED)
         {
             S32 current_discard = getDiscardLevel();
-            if (current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
+            if (current_discard < MAX_DISCARD_LEVEL && current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
             {
                 if (mScaleDownCount <= 0)
                 {
@@ -3088,9 +3088,9 @@ void LLViewerLODTexture::processTextureStatsLowVRAM()
         S32 current_discard = getDiscardLevel();
         if (mBoostLevel < LLGLTexture::BOOST_AVATAR_BAKED)
         {
-            if (current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
+            if (current_discard < MAX_DISCARD_LEVEL && current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
             {
-                if (mScaleDownCount <= 0)
+                if (mScaleDownCount <= 0 || LLViewerTexture::sDesiredDiscardBias > 1.0f)
                 {
                     // should scale down
                     scaleDown();
