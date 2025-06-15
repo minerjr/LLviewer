@@ -92,3 +92,4 @@ web/secondlife.com.*
 
 .env
 .vscode
+my_autobuild.xml

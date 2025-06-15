@@ -415,8 +415,10 @@ public:
     
     bool        getCloseToCamera() const {return mCloseToCamera ;} // Get close to camera value
     void        setCloseToCamera(bool value) {mCloseToCamera = value ;} // Set the close to camera value (true or false)
-    bool        getInFrustum() const {return mInFrustum ;} // Get in frustum value
-    void        setInFrustum(bool value) {mInFrustum = value ;} // Set the in frustum value (true or false)
+    bool        getInFrustum() const {return mInFrustum ;} // Get in octree frustum value
+    void        setInFrustum(bool value) {mInFrustum = value ;} // Set the in octree frustum value (true or false)
+    bool        getInCameraFrustum() const { return mInCameraFrustum; }      // Get in camera frustum value
+    void        setInCameraFrustum(bool value) { mInCameraFrustum = value; } // Set the in camera frustum value (true or false)
     bool        getAnimated() { return mAnimated; }              // Flag for texture which are animated, used to prevent bias/downscaling
     void        setAnimated(bool value) { mAnimated = value; }
     F32         getBias() const { return mBias; } // Get the applied bias value to the texture
@@ -424,8 +426,9 @@ public:
     F32         getImportanceToCamera() const { return mImportanceToCamera; }
     void        setImportanceToCamera(F32 value) { mImportanceToCamera = value; }
     F32         getMaxTexelsPerImage() { return (F32)(mFullWidth * mFullHeight); }
-    F32         getMinTexelsPerImage() { return mMinTexelsPerImage; }
+    U32         getMinTexelsPerImage() { return mMinTexelsPerImage; }
     void        updateMinTexelsPerImage(); // Update the min texels per image, so only change when the mMaxDiscardLevel changes
+    void        updateMaxDiscardOffset(); // Update the max discard offset based on the mFullWidth and mFullHeight
 
     /*virtual*/bool  isActiveFetching() override; //is actively in fetching by the fetching pipeline.
 
@@ -525,10 +528,11 @@ protected:
 
     bool mCloseToCamera; // Is the any face close to the camera
     bool mInFrustum; // Is any face any face in the view frustum
+    bool mInCameraFrustum; // Store the texture's in camera frustum
 	F32 mImportanceToCamera; // Textures can now store the importance to camera
     F32 mBias; // Per texture bias
     S32 mMaxDiscardOffset; // Offset of how far the mFullWidth/mFullHeight is from the Max Texture Size(2048) basis
-    F32 mMinTexelsPerImage; // Store the min TexelsPerImage (min virtual size)
+    U32 mMinTexelsPerImage; // Store the min TexelsPerImage (min virtual size)
     bool mAnimated; // Flag for if the texture is used for an face's texture animation (Used to make sure it does not down scale)
 
 public:

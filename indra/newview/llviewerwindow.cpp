@@ -472,7 +472,7 @@ public:
 
         // Draw stuff growing up from right lower corner of screen
         S32 x_right = mWindow->getWorldViewWidthScaled();
-        S32 xpos = x_right - 400;
+        S32 xpos = x_right - 900;
         xpos = llmax(xpos, 0);
         S32 ypos = 64;
         const S32 y_inc = 20;
@@ -924,8 +924,9 @@ public:
                             addText(xpos, ypos, llformat("ID: %s v_size: %.3f", uuid_str.c_str(), tex->getMaxVirtualSize()));
                             ypos += y_inc;
 
-                            addText(xpos, ypos, llformat("discard level: %d desired level: %d Missing: %s", tex->getDiscardLevel(),
-                                tex->getDesiredDiscardLevel(), tex->isMissingAsset() ? "Y" : "N"));
+                            addText(xpos, ypos, llformat("discard level: %d desired level: %d Missing: %s CloseToCamera %s InCameraFrustum %s In Frumstum %s", tex->getDiscardLevel(), tex->getDesiredDiscardLevel(), tex->isMissingAsset() ? "Y" : "N",
+                                    tex->getCloseToCamera() ? "Y" : "N", tex->getInCameraFrustum() ? "Y" : "N",
+                                    tex->getInFrustum() ? "Y" : "N"));
                             ypos += y_inc;
                         }
                     }

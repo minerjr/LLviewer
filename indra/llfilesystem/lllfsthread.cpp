@@ -191,7 +191,7 @@ bool LLLFSThread::Request::processRequest()
             mBytesRead = 0; // fail
             return true;
         }
-        S32 off;
+        S64 off;
         if (mOffset < 0)
             off = infile.seek(APR_END, 0);
         else

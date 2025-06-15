@@ -180,11 +180,11 @@ void LLFace::init(LLDrawable* drawablep, LLViewerObject* objp)
     mTexExtents[1].set(1, 1);
     mHasMedia = false ;
     mIsMediaAllowed = true;
-    mInFrustum = false;
+    mInFrustum = true;
     // Init in camera frustum and virtual texture size
-    mInCameraFrustum = false;
+    mInCameraFrustum = true;
     mInCameraVirtualSize = 0.0f;
-    mCloseToCamera = false;
+    mCloseToCamera = true;
 }
 
 void LLFace::destroy()
@@ -2362,7 +2362,7 @@ bool LLFace::calcPixelArea(F32& cos_angle_to_view_dir, F32& radius)
         // bias is > 1.0f
 
         // Pre check if the calculated cos angle is greate then the camera's half cos fov
-        bool in_frustum_angle = cos_angle_to_view_dir > camera->getCosHalfFov();
+        bool in_frustum_angle = cos_angle_to_view_dir > 0.0f;
         if (near_off_screen_textures_close_to_camera_quality)
         {
             mCloseToCamera = dist <= (FACE_IMPORTANCE_TO_CAMERA_OVER_DISTANCE[0][0]) * (1.0f + (0.33f * (4.0f - LLViewerTexture::sDesiredDiscardBias)));
@@ -2380,6 +2380,11 @@ bool LLFace::calcPixelArea(F32& cos_angle_to_view_dir, F32& radius)
     {
         if(!camera->AABBInFrustum(center, size))
         {
+            if (sUpdateAutoScaleTextures && auto_scale_textures)
+            {
+                mCloseToCamera = false; // Face cannot be close to the camera
+                mInCameraFrustum = false; // In camera frustum is also false
+            }
             mImportanceToCamera = 0.f ;
             return false ;
         }

@@ -583,8 +583,8 @@ void LLViewerTexture::updateClass()
     static LLCachedControl<F32> minimized_discard_time(gSavedSettings, "TextureDiscardMinimizedTime", 1.f);
     static LLCachedControl<F32> backgrounded_discard_time(gSavedSettings, "TextureDiscardBackgroundedTime", 60.f);
 
-    bool in_background = (gViewerWindow && !gViewerWindow->getWindow()->getVisible()) || !gFocusMgr.getAppHasFocus();
-    bool is_minimized  = gViewerWindow && gViewerWindow->getWindow()->getMinimized() && in_background;
+    bool in_background = false;//(gViewerWindow && !gViewerWindow->getWindow()->getVisible()) || !gFocusMgr.getAppHasFocus();
+    bool is_minimized  = false;// gViewerWindow && gViewerWindow->getWindow()->getMinimized() && in_background;
     if (in_background)
     {
         F32 discard_time = is_minimized ? minimized_discard_time : backgrounded_discard_time;
@@ -1237,6 +1237,7 @@ void LLViewerFetchedTexture::loadFromFastCache()
         mFullWidth = mRawImage->getWidth() << mRawDiscardLevel;
         mFullHeight = mRawImage->getHeight() << mRawDiscardLevel;
         setTexelsPerImage();
+        mMinTexelsPerImage = mTexelsPerImage;
 
         if(mFullWidth > MAX_IMAGE_SIZE || mFullHeight > MAX_IMAGE_SIZE)
         {
@@ -1261,7 +1262,7 @@ void LLViewerFetchedTexture::loadFromFastCache()
                 }
             }
 
-            if (mBoostLevel == LLGLTexture::BOOST_THUMBNAIL)
+            else if (mBoostLevel == LLGLTexture::BOOST_THUMBNAIL)
             {
                 S32 expected_width = mKnownDrawWidth > 0 ? mKnownDrawWidth : DEFAULT_THUMBNAIL_DIMENSIONS;
                 S32 expected_height = mKnownDrawHeight > 0 ? mKnownDrawHeight : DEFAULT_THUMBNAIL_DIMENSIONS;
@@ -1272,7 +1273,11 @@ void LLViewerFetchedTexture::loadFromFastCache()
                 }
             }
 
-            mRequestedDiscardLevel = mDesiredDiscardLevel + 1;
+            if (mDesiredDiscardLevel < 0 || mDesiredDiscardLevel > MAX_DISCARD_LEVEL)
+            {
+                mDesiredDiscardLevel = MAX_DISCARD_LEVEL;
+            }
+            mRequestedDiscardLevel = mDesiredDiscardLevel;
             mIsRawImageValid = true;
             addToCreateTexture();
         }
@@ -1458,6 +1463,8 @@ bool LLViewerFetchedTexture::preCreateTexture(S32 usename/*= 0*/)
         mFullWidth = mRawImage->getWidth();
         mFullHeight = mRawImage->getHeight();
         setTexelsPerImage();
+        updateMinTexelsPerImage();
+        updateMaxDiscardOffset();
     }
     else
     {
@@ -1521,11 +1528,6 @@ bool LLViewerFetchedTexture::preCreateTexture(S32 usename/*= 0*/)
         }
     }
 
-    // Setup capped size and max size (for handling scaling when max size changes)
-    F64 max_size = (F64)llmax(mFullWidth, mFullHeight);
-    mMaxDiscardOffset = (S32)(log2((F64)MAX_IMAGE_SIZE_DEFAULT) - log2(max_size));
-    updateMinTexelsPerImage();
-
     return res;
 }
 
@@ -1551,6 +1553,9 @@ void LLViewerFetchedTexture::postCreateTexture()
 #if LL_IMAGEGL_THREAD_CHECK
     mGLTexturep->checkActiveThread();
 #endif
+
+    updateMinTexelsPerImage();
+    updateMaxDiscardOffset();
 
     setActive();
 
@@ -1696,7 +1701,14 @@ extern bool gCubeSnapshot;
 void LLViewerFetchedTexture::updateMinTexelsPerImage()
 {
     // Store for reference so we don't have to keep caculating this for texture updates
-    mMinTexelsPerImage = (F32)(getWidth(getMaxDiscardLevel())* getHeight(getMaxDiscardLevel()));
+    mMinTexelsPerImage = (U32)(getWidth(getMaxDiscardLevel()) * getHeight(getMaxDiscardLevel()));
+}
+
+void LLViewerFetchedTexture::updateMaxDiscardOffset()
+{
+    // Setup capped size and max size (for handling scaling when max size changes)
+    F64 max_size = (F64)llmax(mFullWidth, mFullHeight);
+    mMaxDiscardOffset = (S32)(log2((F64)MAX_IMAGE_SIZE_DEFAULT) - log2(max_size));
 }
 
 //virtual
@@ -1904,7 +1916,8 @@ bool LLViewerFetchedTexture::processFetchResults(S32& desired_discard, S32 curre
                     mRawImage = mRawImage->scaled(expected_width, expected_height);
                 }
             }
-
+            updateMinTexelsPerImage();
+            updateMaxDiscardOffset();
             return true;
         }
         else
@@ -2081,8 +2094,18 @@ bool LLViewerFetchedTexture::updateFetch()
     }
     else if(mDesiredDiscardLevel > getMaxDiscardLevel())
     {
-        LL_PROFILE_ZONE_NAMED_CATEGORY_TEXTURE("vftuf - desired > max");
-        make_request = false;
+        // If the current texture discard is not valid or larger then the max discard level, then
+        if (current_discard == -1 || current_discard > getMaxDiscardLevel())
+        {
+            //Set the desired discard level to the max discard level
+            mDesiredDiscardLevel = getMaxDiscardLevel();
+        }
+        // Otherwise, cancel the request
+        else
+        {
+            LL_PROFILE_ZONE_NAMED_CATEGORY_TEXTURE("vftuf - desired > max");
+            make_request = false;
+        }
     }
     else  if (mNeedsCreateTexture || mIsMissingAsset)
     {
@@ -2132,6 +2155,11 @@ bool LLViewerFetchedTexture::updateFetch()
         if (override_tex_discard_level != 0)
         {
             desired_discard = override_tex_discard_level;
+        }
+        // Cap requests to be only up to Max Discord level
+        if (desired_discard > MAX_DISCARD_LEVEL)
+        {
+            desired_discard = MAX_DISCARD_LEVEL;
         }
 
         // bypass texturefetch directly by pulling from LLTextureCache
@@ -2995,6 +3023,10 @@ void LLViewerLODTexture::processTextureStatsLowVRAM()
         mMaxVirtualSize = llmin(mMaxVirtualSize, max_tex_res * max_tex_res);
     }
 
+    //if (mFullWidth == 2048 || mFullHeight == 2048)
+    {
+        //LL_DEBUGS() << "Max texture" << LL_ENDL;
+    }
     if (textures_fullres)
     {
         mDesiredDiscardLevel = 0;
@@ -3017,7 +3049,7 @@ void LLViewerLODTexture::processTextureStatsLowVRAM()
             S32 current_discard = getDiscardLevel();
             if (current_discard < MAX_DISCARD_LEVEL && current_discard < mDesiredDiscardLevel && !mForceToSaveRawImage)
             {
-                if (mScaleDownCount <= 0)
+                if (mScaleDownCount <= 0 || sDesiredDiscardBias > 1.0f)
                 {
                     // should scale down
                     scaleDown();
@@ -3045,7 +3077,12 @@ void LLViewerLODTexture::processTextureStatsLowVRAM()
         //static const F64 log_2 = log(2.0);
         static const F64 log_4 = log(4.0);
 
-        F32 discard_level = 0.f;
+        S32 min_discard = 0;
+        if (mFullWidth > max_tex_res || mFullHeight > max_tex_res)
+            min_discard = 1;
+
+        // Use a S32 value for the discard level
+        S32 discard_level = min_discard;
 
         // If we know the output width and height, we can force the discard
         // level to the correct value, and thus not decode more texture
@@ -3053,24 +3090,41 @@ void LLViewerLODTexture::processTextureStatsLowVRAM()
         if (mKnownDrawWidth && mKnownDrawHeight)
         {
             S32 draw_texels = mKnownDrawWidth * mKnownDrawHeight;
-            draw_texels = llclamp(draw_texels, MIN_IMAGE_AREA, MAX_IMAGE_AREA);
-
-            // Use log_4 because we're in square-pixel space, so an image
-            // with twice the width and twice the height will have mTexelsPerImage
-            // 4 * draw_size
-            discard_level = (F32)(log(mTexelsPerImage / draw_texels) / log_4);
+            // Find the best discard that covers the entire mMaxVirtualSize of the on screen texture (Use MAX_DISCARD_LEVEL as a max discard
+            // instead of MAX_DISCARD_LEVEL+1)
+            for (; discard_level < MAX_DISCARD_LEVEL && discard_level < getMaxDiscardLevel(); discard_level++) // <FS:minerjr> [FIRE-35361] RenderMaxTextureResolution caps texture resolution lower than intended
+            {
+                // If the max virtual size is greater then or equal to the current discard level, then break out of the loop and use the
+                // current
+                if (draw_texels >= getWidth(discard_level) * getHeight(discard_level)) // <FS:minerjr> [FIRE-35361] RenderMaxTextureResolution caps texture resolution lower than intended
+                {
+                    break;
+                }
+                else if (draw_texels >= getWidth(discard_level + 1) * getHeight(discard_level + 1))
+                {
+                    break;
+                }
+            }
         }
         else
         {
-            // Calculate the required scale factor of the image using pixels per texel
-            discard_level = (F32)(log(mTexelsPerImage / mMaxVirtualSize) / log_4);
+            // Find the best discard that covers the entire mMaxVirtualSize of the on screen texture (Use MAX_DISCARD_LEVEL as a max discard
+            // instead of MAX_DISCARD_LEVEL+1)
+            for (; discard_level < MAX_DISCARD_LEVEL && discard_level < getMaxDiscardLevel();
+                 discard_level++) // <FS:minerjr> [FIRE-35361] RenderMaxTextureResolution caps texture resolution lower than intended
+            {
+                // If the max virtual size is greater then or equal to the current discard level, then break out of the loop and use the
+                // current
+                if (mMaxVirtualSize >= getWidth(discard_level) * getHeight(discard_level)) // <FS:minerjr> [FIRE-35361] RenderMaxTextureResolution caps texture resolution lower than intended
+                {
+                    break;
+                }
+                else if (mMaxVirtualSize >= getWidth(discard_level + 1) * getHeight(discard_level + 1))
+                {
+                    break;
+                }
+            }
         }
-
-        discard_level = floorf(discard_level);
-
-        F32 min_discard = 0.f;
-        if (mFullWidth > max_tex_res || mFullHeight > max_tex_res)
-            min_discard = 1.f;
 
         discard_level = llclamp(discard_level, min_discard, (F32)MAX_DISCARD_LEVEL);
 

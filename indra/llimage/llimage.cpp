@@ -1382,6 +1382,7 @@ LLPointer<LLImageRaw> LLImageRaw::duplicate()
 {
     if(getNumRefs() < 2)
     {
+        LL_WARNS() << "Requested to duplicate, but not enough references. May be source of issue for KDU exceptions" << LL_ENDL;
         return this; //nobody else refences to this image, no need to duplicate.
     }
 
@@ -2533,7 +2534,7 @@ bool LLImageFormatted::save(const std::string &filename)
 
     LLImageDataSharedLock lock(this);
 
-    S32 result = outfile.write(getData(), getDataSize());
+    S64 result = outfile.write(getData(), getDataSize());
     outfile.close() ;
     return (result != 0);
 }

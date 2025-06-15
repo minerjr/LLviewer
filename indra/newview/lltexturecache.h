@@ -45,9 +45,8 @@ class LLTextureCache : public LLWorkerThread
     friend class LLTextureCacheLocalFileWorker;
 
 private:
-
 #if LL_WINDOWS
-#pragma pack(push,1)
+#pragma pack(push, 1)
 #endif
 
     // Entries
@@ -76,6 +75,31 @@ private:
         S32 mImageSize; // total size of image if known
         S32 mBodySize; // size of body file in body cache
         U32 mTime; // seconds since 1/1/1970
+    };
+
+    struct FastCacheEntryHeader
+    {
+        FastCacheEntryHeader() : mWidth(0), mHeight(0), mComponents(0), mDiscardLevel(0), mOffset(0), mOrgDiscardLevel(0), mOrgWidthPow(0), mOrgHeightPow(0){}
+        FastCacheEntryHeader(U16 width, U16 height, S8 components, S8 discard_level, S32 offset, S8 org_discard_level, U8 org_width_pow, U8 org_height_pow) :
+            mWidth(width),
+            mHeight(height),
+            mComponents(components),
+            mDiscardLevel(discard_level),
+            mOffset(offset),
+            mOrgDiscardLevel(org_discard_level),
+            mOrgWidthPow(org_width_pow),
+            mOrgHeightPow(org_height_pow)
+        {
+        }
+        S64 mOffset;
+        U16 mWidth;
+        U16 mHeight;
+        S8 mComponents;
+        S8 mDiscardLevel;
+        S8 mOrgDiscardLevel;
+        U8 mOrgWidthPow : 4;
+        U8 mOrgHeightPow : 4;
+        
     };
 
 #if LL_WINDOWS
@@ -197,6 +221,7 @@ private:
     LLMutex mListMutex;
     LLMutex mFastCacheMutex;
     LLAPRFile* mHeaderAPRFile;
+
     LLVolatileAPRPool* mFastCachePoolp;
 
     // mLocalAPRFilePoolp is not thread safe and is meant only for workers
@@ -220,6 +245,7 @@ private:
     std::string mHeaderEntriesFileName;
     std::string mHeaderDataFileName;
     std::string mFastCacheFileName;
+    std::string mFastCacheHeaderFileName;
     EntriesInfo mHeaderEntriesInfo;
     std::set<S32> mFreeList; // deleted entries
     std::set<LLUUID> mLRU;
@@ -227,8 +253,10 @@ private:
     id_map_t mHeaderIDMap;
 
     LLAPRFile*   mFastCachep;
+    LLAPRFile*   mFastCacheHeaderp;
     LLFrameTimer mFastCacheTimer;
-    U8*          mFastCachePadBuffer;
+    FastCacheEntryHeader* mFastCacheHeaderPadBuffer;
+    U8* mFastCacheBodyPadBuffer;
 
     // BODIES (TEXTURES minus headers)
     std::string mTexturesDirName;
