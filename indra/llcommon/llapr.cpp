@@ -307,31 +307,31 @@ private:
 //
 LLAPRFile::LLAPRFile()
     : mFile(NULL),
-      mCurrentFilePoolp(NULL),
-      mMMapFile(NULL)
+    mMMapFile(NULL),
+    mCurrentFilePoolp(NULL)
 {
 }
 
 LLAPRFile::LLAPRFile(const std::string& filename, apr_int32_t flags, LLVolatileAPRPool* pool)
     : mFile(NULL),
-      mCurrentFilePoolp(NULL),
-      mMMapFile(NULL)
+    mMMapFile(NULL),
+    mCurrentFilePoolp(NULL)
 {
     open(filename, flags, pool);
 }
 
 LLAPRFile::LLAPRFile(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, LLVolatileAPRPool* pool)
     : mFile(NULL),
-    mCurrentFilePoolp(NULL),
-    mMMapFile(NULL)
+    mMMapFile(NULL),
+    mCurrentFilePoolp(NULL)
 {
     openMemoryMap(filename, flags, mmap_flags, pool);
 }
 
 LLAPRFile::LLAPRFile(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, S64 init_file_size, bool zero_out, LLVolatileAPRPool* pool)
     : mFile(NULL),
-    mCurrentFilePoolp(NULL),
-    mMMapFile(NULL)
+    mMMapFile(NULL),
+    mCurrentFilePoolp(NULL)
 {
     openMemoryMap64(filename, flags, mmap_flags, init_file_size, zero_out, pool);
 }
