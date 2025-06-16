@@ -325,7 +325,15 @@ LLAPRFile::LLAPRFile(const std::string& filename, apr_int32_t flags, apr_int32_t
     mCurrentFilePoolp(NULL),
     mMMapFile(NULL)
 {
-    openMemoryMap(filename, flags, pool, mmap_flags);
+    openMemoryMap(filename, flags, mmap_flags, pool);
+}
+
+LLAPRFile::LLAPRFile(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, S64 init_file_size, bool zero_out, LLVolatileAPRPool* pool)
+    : mFile(NULL),
+    mCurrentFilePoolp(NULL),
+    mMMapFile(NULL)
+{
+    openMemoryMap64(filename, flags, mmap_flags, init_file_size, zero_out, pool);
 }
 
 LLAPRFile::~LLAPRFile()
@@ -375,6 +383,7 @@ apr_status_t LLAPRFile::open(const std::string& filename, apr_int32_t flags, LLV
 
     if (s != APR_SUCCESS || !mFile)
     {
+        LL_WARNS() << "Could not open file: " << filename << LL_ENDL;
         mFile = NULL ;
 
         if (sizep)
@@ -419,6 +428,7 @@ apr_status_t LLAPRFile::open64(const std::string& filename, apr_int32_t flags, L
 
     if (s != APR_SUCCESS || !mFile)
     {
+        LL_WARNS() << "Could not open file: " << filename << LL_ENDL;
         mFile = NULL;
 
         if (sizep)
@@ -464,6 +474,7 @@ apr_status_t LLAPRFile::openMemoryMap(const std::string& filename, apr_int32_t f
 
     if (s != APR_SUCCESS || !mFile)
     {
+        LL_WARNS() << "Could not open file: " << filename << LL_ENDL;
         mFile = NULL;
 
         if (sizep)
@@ -495,6 +506,67 @@ apr_status_t LLAPRFile::openMemoryMap(const std::string& filename, apr_int32_t f
     return s;
 }
 
+apr_status_t LLAPRFile::openMemoryMap(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, S32 init_file_size, bool zero_out, LLVolatileAPRPool* pool, S32* sizep)
+{
+    apr_status_t s;
+    S32 file_size = 0;
+
+    //check if already open some file
+    llassert_always(!mFile);
+    llassert_always(!mCurrentFilePoolp);
+
+    mCurrentFilePoolp = pool ? pool : sAPRFilePoolp;
+    apr_pool_t* apr_pool = mCurrentFilePoolp->getVolatileAPRPool(); //paired with clear in close()
+    s = apr_file_open(&mFile, filename.c_str(), flags, APR_OS_DEFAULT, apr_pool);
+
+    if (s != APR_SUCCESS || !mFile)
+    {
+        LL_WARNS() << "Could not open file: " << filename << LL_ENDL;
+        mFile = NULL;
+
+        if (sizep)
+        {
+            *sizep = 0;
+        }
+    }
+    else
+    {
+        apr_off_t offset = init_file_size;
+        if (apr_file_seek(mFile, APR_SET, &offset) == APR_SUCCESS)
+        {
+            llassert_always(offset <= 0x7fffffffffffffff);
+            apr_size_t one_char = 1;
+            apr_file_write(mFile, "\0", &one_char);
+            file_size = (S32)offset;
+            offset = 0;
+            apr_file_seek(mFile, APR_SET, &offset);
+        }
+        if (sizep) *sizep = file_size;
+
+        s = apr_mmap_create(&mMMapFile, mFile, 0, file_size, mmap_flags, apr_pool);
+        if (s != APR_SUCCESS)
+        {
+            LL_WARNS() << "Could not create Memory Map File: " << filename << LL_ENDL;
+            close();
+            return s;
+        }
+
+        // If need to zero out the file, then use memset over the memory map
+        if (zero_out)
+        {
+            memset(mMMapFile->mm, 0, sizeof(file_size));
+        }
+    }
+
+    if (!mFile)
+    {
+        // It will clean pool
+        close();
+    }
+
+    return s;
+}
+
 apr_status_t LLAPRFile::openMemoryMap64(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, LLVolatileAPRPool* pool, S64* sizep)
 {
     apr_status_t s;
@@ -510,6 +582,7 @@ apr_status_t LLAPRFile::openMemoryMap64(const std::string& filename, apr_int32_t
 
     if (s != APR_SUCCESS || !mFile)
     {
+        LL_WARNS() << "Could not open file: " << filename << LL_ENDL;
         mFile = NULL;
 
         if (sizep)
@@ -534,6 +607,74 @@ apr_status_t LLAPRFile::openMemoryMap64(const std::string& filename, apr_int32_t
 
     if (!mFile)
     {
+        // It will clean pool
+        close();
+    }
+
+    return s;
+}
+
+apr_status_t LLAPRFile::openMemoryMap64(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, S64 init_file_size, bool zero_out, LLVolatileAPRPool* pool, S64* sizep)
+{
+    apr_status_t s;
+    S64 file_size = 0;
+
+    //check if already open some file
+    llassert_always(!mFile);
+    llassert_always(!mCurrentFilePoolp);
+
+    mCurrentFilePoolp = pool ? pool : sAPRFilePoolp;
+    apr_pool_t* apr_pool = mCurrentFilePoolp->getVolatileAPRPool(); //paired with clear in close()
+    s = apr_file_open(&mFile, filename.c_str(), flags, APR_OS_DEFAULT, apr_pool);
+
+    if (s != APR_SUCCESS || !mFile)
+    {
+        LL_WARNS() << "Could not open file: " << filename << LL_ENDL;
+        mFile = NULL;
+
+        if (sizep)
+        {
+            *sizep = 0;
+        }
+    }
+    else
+    {
+        apr_off_t offset = init_file_size;
+        if (apr_file_seek(mFile, APR_SET, &offset) == APR_SUCCESS)
+        {
+            llassert_always(offset <= 0x7fffffffffffffff);
+            apr_size_t one_char = 1;
+            s = apr_file_write(mFile, "\0", &one_char);
+            if (s != APR_SUCCESS || one_char != 1)
+            {
+                LL_WARNS() << "Could not write to end of file: " << filename << LL_ENDL;
+                close();
+                return s;
+            }
+            file_size = offset;
+            offset = 0;
+            apr_file_seek(mFile, APR_SET, &offset);
+        }
+        if (sizep) *sizep = file_size;
+
+        s = apr_mmap_create(&mMMapFile, mFile, 0, file_size, mmap_flags, apr_pool);
+        if (s != APR_SUCCESS)
+        {
+            LL_WARNS() << "Could not create Memory Map File: " << filename << LL_ENDL;
+            close();
+            return s;
+        }
+
+        // If need to zero out the file, then use memset over the memory map
+        if (zero_out)
+        {
+            memset(mMMapFile->mm, 0, sizeof(file_size));
+        }
+    }
+
+    if (!mFile)
+    {
+        LL_WARNS() << "Could not open file: " << filename << LL_ENDL;
         // It will clean pool
         close();
     }

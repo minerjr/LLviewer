@@ -162,6 +162,7 @@ public:
     LLAPRFile() ;
     LLAPRFile(const std::string& filename, apr_int32_t flags, LLVolatileAPRPool* pool = NULL);
     LLAPRFile(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, LLVolatileAPRPool* pool = NULL );
+    LLAPRFile(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, S64 init_file_size, bool zero_out, LLVolatileAPRPool* pool = NULL);
     ~LLAPRFile() ;
 
     apr_status_t open(const std::string& filename, apr_int32_t flags, LLVolatileAPRPool* pool = NULL, S32* sizep = NULL);
@@ -169,6 +170,8 @@ public:
     apr_status_t open(const std::string& filename, apr_int32_t flags, bool use_global_pool); //use gAPRPoolp.
     apr_status_t openMemoryMap(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, LLVolatileAPRPool* pool = NULL, S32* sizep = NULL);
     apr_status_t openMemoryMap64(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, LLVolatileAPRPool* pool = NULL, S64* sizep = NULL);
+    apr_status_t openMemoryMap(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, S32 init_file_size, bool zero_out, LLVolatileAPRPool* pool = NULL, S32* sizep = NULL);
+    apr_status_t openMemoryMap64(const std::string& filename, apr_int32_t flags, apr_int32_t mmap_flags, S64 init_file_size, bool zero_out, LLVolatileAPRPool* pool = NULL, S64* sizep = NULL);
     apr_status_t openMemoryMap(const std::string& filename, apr_int32_t flags, bool use_global_pool, apr_int32_t mmap_flags); // use gAPRPoolp.
     apr_status_t close() ;
 
