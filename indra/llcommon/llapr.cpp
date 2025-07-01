@@ -497,7 +497,7 @@ apr_status_t LLAPRFile::openMemoryMap(const std::string& filename, apr_int32_t f
         s = apr_mmap_create(&mMMapFile, mFile, 0, file_size, mmap_flags, apr_pool);
     }
 
-    if (!mFile)
+    if (!mFile || !mMMapFile)
     {
         // It will clean pool
         close();
@@ -873,6 +873,35 @@ apr_status_t LLAPRFile::memoryMapAssign64(void** addr, S64 offset)
     }
 
     return s;
+}
+
+// Get the file size from the file info
+S64 LLAPRFile::size64()
+{
+    // If no file is present, then return 0 for file size
+    if (!mFile) return 0;
+
+    apr_finfo_t info;
+
+    // Get the file size information
+    apr_status_t s = apr_file_info_get(&info, APR_FINFO_SIZE, mFile);
+
+    if (s == APR_SUCCESS)
+    {
+        return info.size;
+    }
+    else
+    {
+        return 0;
+    }
+
+}
+
+// Get the file size from the file info
+S32 LLAPRFile::size()
+{
+    // Simply call size 64 and cast it down to 32 bit and return it
+    return (S32)size64();
 }
 
 //

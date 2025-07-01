@@ -190,7 +190,8 @@ public:
 
     apr_status_t memoryMapAssign(void** addr, S32 offset);
     apr_status_t memoryMapAssign64(void** addr, S64 offset);
-
+    S32 size();
+    S64 size64();
 //
 //*******************************************************************************************************************************
 //static components
