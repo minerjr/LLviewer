@@ -98,6 +98,7 @@
 #include "llcontainerview.h"
 #include "llconversationlog.h"
 #include "lldebugview.h"
+#include "lltextureview.h"
 #include "lldrawable.h"
 #include "lleventnotifier.h"
 #include "llface.h"
@@ -1523,6 +1524,7 @@ bool idle_startup()
 
         // set initial visibility of debug console
         gDebugView->mDebugConsolep->setVisible(gSavedSettings.getBOOL("ShowDebugConsole"));
+        gTextureView->setVisible(true);
         do_startup_frame();
 
         //

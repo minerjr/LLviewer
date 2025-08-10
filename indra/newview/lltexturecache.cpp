@@ -48,10 +48,12 @@
 //  Actual texture body files
 
 //note: there is no good to define 1024 for TEXTURE_CACHE_ENTRY_SIZE while FIRST_PACKET_SIZE is 600 on sim side.
+constexpr S32 MAX_TEXTURE_SIZE = 2048;
 const S32 TEXTURE_CACHE_ENTRY_SIZE = FIRST_PACKET_SIZE;//1024;
 const F32 TEXTURE_CACHE_PURGE_AMOUNT = .20f; // % amount to reduce the cache by when it exceeds its limit
 const F32 TEXTURE_CACHE_LRU_SIZE = .10f; // % amount for LRU list (low overhead to regenerate)
 const S32 TEXTURE_FAST_CACHE_ENTRY_OVERHEAD = sizeof(S32) * 4; //w, h, c, level
+constexpr S32 TEXTURE_FAST_CACHE_ENTRY_DATA_SIZE = (S32)(MAX_TEXTURE_SIZE >> MAX_DISCARD_LEVEL) * (S32)(MAX_TEXTURE_SIZE >> MAX_DISCARD_LEVEL) * 4;
 const S32 TEXTURE_FAST_CACHE_DATA_SIZE = 16 * 16 * 4;
 const S32 TEXTURE_FAST_CACHE_ENTRY_SIZE = TEXTURE_FAST_CACHE_DATA_SIZE + TEXTURE_FAST_CACHE_ENTRY_OVERHEAD;
 const F32 TEXTURE_LAZY_PURGE_TIME_LIMIT = .004f; // 4ms. Would be better to autoadjust, but there is a major cache rework in progress.
@@ -581,6 +583,12 @@ bool LLTextureCacheRemoteWorker::doWrite()
                     mDataSize = -1; // failed
                     done = true;
                 }
+                if(!mCache->writeToFastCacheMaxDiscard(mID, idx, mRawImage, mRawDiscardLevel))
+                {
+                    LL_WARNS() << "writeToFastCacheMaxDiscard failed" << LL_ENDL;
+                    mDataSize = -1; // failed
+                    done = true;
+                }
             }
         }
         else
@@ -801,6 +809,16 @@ LLTextureCache::LLTextureCache(bool threaded)
       mDoPurge(false),
       mFastCachep(NULL),
       mFastCachePoolp(NULL),
+      mFastCacheHeaderp(NULL),
+      mFastCacheBodyp(NULL),
+      mFastCacheMMapHeader(NULL),
+      mFastCacheRAMHeader(NULL),
+      mFastCacheRAMBody(NULL),
+      mFastCacheRAMBodyExpansion(0),
+      mSizeOfFastCacheHeaders(0),
+      mSizeOfFastCacheBody(0),
+      mFastCacheRAMExpansionHeaderIndex(0),
+      mFastCacheBodyPadBuffer(NULL),
       mFastCachePadBuffer(NULL)
 {
     mHeaderAPRFilePoolp = new LLVolatileAPRPool(); // is_local = true, because this pool is for headers, headers are under own mutex
@@ -810,10 +828,58 @@ LLTextureCache::~LLTextureCache()
 {
     clearDeleteList() ;
     writeUpdatedEntries() ;
+
+    // Write the existing fast cache RAM back to the file, just in case
+    if ((mFastCacheRAMBody || mFastCacheRAMBodyExpansion.size() > 0) && mFastCacheRAMHeader)
+    {
+        LLMutexLock lock_cache(&mFastCacheMutex);
+
+        openFastCache();
+        // Reset the fast cache back to first of the file
+        mFastCacheBodyp->seek64(APR_SET, 0);
+        // Store the updated RAM fast cache data to the file, just in case there was an update.
+        mFastCacheBodyp->write64(mFastCacheRAMBody, mSizeOfFastCacheBody);
+
+        for (int index = 0; index < mFastCacheRAMBodyExpansion.size(); index++)
+        {
+            FastCacheEntryHeader *save_header = mFastCacheRAMHeader + (mFastCacheRAMExpansionHeaderIndex + index);
+            save_header->mInRAM = true;
+            mFastCacheBodyp->seek64(APR_SET, save_header->mOffset);
+            mFastCacheBodyp->write64(mFastCacheRAMBodyExpansion[index], save_header->mWidth * save_header->mHeight * save_header->mComponents);
+            ll_aligned_free_16(mFastCacheRAMBodyExpansion[index]);
+        }
+        
+        // Finally clear the list of fast cache RAM expansion bodies
+        mFastCacheRAMBodyExpansion.clear();
+        // If the header is still valid, then write the cache header to the file
+        if (mFastCacheHeaderp)
+        {
+            mFastCacheHeaderp->seek(APR_SET, 0);
+            mFastCacheHeaderp->write64(mFastCacheRAMHeader, mSizeOfFastCacheHeaders);
+        }
+
+        closeFastCache(true);
+    }
+
     delete mFastCachep;
+    if (mFastCacheHeaderp)
+        delete mFastCacheHeaderp;
+    if (mFastCacheBodyp)
+        delete mFastCacheBodyp;
     delete mFastCachePoolp;
     delete mHeaderAPRFilePoolp;
     ll_aligned_free_16(mFastCachePadBuffer);
+    if (mFastCacheBodyPadBuffer)
+        ll_aligned_free_16(mFastCacheBodyPadBuffer);
+    if (mFastCacheRAMHeader)
+    {
+        delete mFastCacheRAMHeader;
+    }
+
+    if (mFastCacheRAMBody)
+    {
+        ll_aligned_free_16(mFastCacheRAMBody);
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -940,6 +1006,8 @@ const char* old_textures_dirname = "textures";
 //change the location of the texture cache to prevent from being deleted by old version viewers.
 const char* textures_dirname = "texturecache";
 const char* fast_cache_filename = "FastCache.cache";
+const char* fast_cache_header_filename = "FastCacheHeader.cache";
+const char* fast_cache_body_filename = "FastCacheBody.cache";
 
 void LLTextureCache::setDirNames(ELLPath location)
 {
@@ -949,6 +1017,8 @@ void LLTextureCache::setDirNames(ELLPath location)
     mHeaderDataFileName = gDirUtilp->getExpandedFilename(location, textures_dirname, cache_filename);
     mTexturesDirName = gDirUtilp->getExpandedFilename(location, textures_dirname);
     mFastCacheFileName =  gDirUtilp->getExpandedFilename(location, textures_dirname, fast_cache_filename);
+    mFastCacheHeaderFileName = gDirUtilp->getExpandedFilename(location, textures_dirname, fast_cache_header_filename);
+    mFastCacheBodyFileName = gDirUtilp->getExpandedFilename(location, textures_dirname, fast_cache_body_filename);
 }
 
 void LLTextureCache::purgeCache(ELLPath location, bool remove_dir)
@@ -2001,6 +2071,7 @@ LLTextureCache::handle_t LLTextureCache::writeToCache(const LLUUID& id,
 //called in the main thread
 LLPointer<LLImageRaw> LLTextureCache::readFromFastCache(const LLUUID& id, S32& discardlevel)
 {
+    LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
     U32 offset;
     {
         LLMutexLock lock(&mHeaderMutex);
@@ -2051,6 +2122,99 @@ LLPointer<LLImageRaw> LLTextureCache::readFromFastCache(const LLUUID& id, S32& d
         closeFastCache();
     }
     LLPointer<LLImageRaw> raw = new LLImageRaw(data, head[0], head[1], head[2], true);
+
+    return raw;
+}
+
+//called in the main thread
+LLPointer<LLImageRaw> LLTextureCache::readFromFastCacheMaxDiscard(const LLUUID& id, S32& discardlevel)
+{
+    LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
+    static LLCachedControl<bool> fast_cache_use_RAM(gSavedSettings,"FastCacheUseRAM", false);
+    S64 offset = 0;
+    {
+        LLMutexLock lock(&mHeaderMutex);
+        id_map_t::const_iterator iter = mHeaderIDMap.find(id);
+        if(iter == mHeaderIDMap.end())
+        {
+            return NULL; //not in the cache
+        }
+
+        offset = iter->second;
+    }
+
+    if (offset > sCacheMaxEntries) return NULL;
+
+    LLMutexLock lock(&mFastCacheMutex);
+
+    openFastCache();
+
+    FastCacheEntryHeader* currentCacheHeader = fast_cache_use_RAM ? mFastCacheRAMHeader : mFastCacheMMapHeader;
+
+    S32 image_size = currentCacheHeader[offset].mWidth * currentCacheHeader[offset].mHeight * currentCacheHeader[offset].mComponents;
+    if(image_size <= 0
+        || image_size > TEXTURE_FAST_CACHE_ENTRY_DATA_SIZE || currentCacheHeader[offset].mDiscardLevel < 0) // invalid
+    {
+        closeFastCache();
+        return NULL;
+    }
+    discardlevel = currentCacheHeader[offset].mDiscardLevel;
+
+    S64 data_offset_start = currentCacheHeader[offset].mOffset;
+
+    LLPointer<LLImageRaw> raw;
+
+    // If the offset is above the range of the in memory size, use the file pointer
+    if (!fast_cache_use_RAM)
+    {
+        if (mFastCacheBodyp->seek64(APR_SET,data_offset_start) != data_offset_start)
+        {
+            LL_WARNS() << "File offset is invalid for fast cache data: " << id.asString().substr(0, 7) << LL_ENDL;
+            closeFastCache();
+            return NULL;
+        }
+
+        U8 *data = (U8*)ll_aligned_malloc_16(image_size);
+        if (mFastCacheBodyp->read64(data, image_size) != image_size)
+        {
+            LL_WARNS() << "Could not read fast cache data: " << id.asString().substr(0, 7) << LL_ENDL;
+            ll_aligned_free_16(data);
+            closeFastCache();
+            return NULL;
+        }
+
+        raw = new LLImageRaw(data, currentCacheHeader[offset].mWidth, currentCacheHeader[offset].mHeight, (S8)currentCacheHeader[offset].mComponents, true);
+    }
+    else
+    {
+        if (!currentCacheHeader[offset].mInRAM || data_offset_start > mSizeOfFastCacheBody || (data_offset_start + image_size) > mSizeOfFastCacheBody)
+        {
+            if (offset > mFastCacheRAMExpansionHeaderIndex)
+            {
+                S64 index = offset - mFastCacheRAMExpansionHeaderIndex;
+                if (mFastCacheRAMExpansionHeaderIndex == -1) index = offset;
+                // If the index is beyond the fast cache ram expansion size, need to add a new one
+                if (index < (S64)mFastCacheRAMBodyExpansion.size() && index >= 0)
+                {
+                    raw = new LLImageRaw(mFastCacheRAMBodyExpansion[index], currentCacheHeader[offset].mWidth, currentCacheHeader[offset].mHeight, (S8)currentCacheHeader[offset].mComponents, true, true);
+                }
+                else
+                {
+                    return NULL;
+                }
+            }
+            else
+            {
+                return NULL;
+            }
+        }
+        else
+        {
+            raw = new LLImageRaw(mFastCacheRAMBody + data_offset_start, currentCacheHeader[offset].mWidth, currentCacheHeader[offset].mHeight, (S8)currentCacheHeader[offset].mComponents, true, true);
+        }
+    }
+
+    closeFastCache();
 
     return raw;
 }
@@ -2135,15 +2299,215 @@ bool LLTextureCache::writeToFastCache(LLUUID image_id, S32 id, LLPointer<LLImage
     return true;
 }
 
+//return the fast cache location
+bool LLTextureCache::writeToFastCacheMaxDiscard(LLUUID image_id, S32 id, LLPointer<LLImageRaw> raw, S32 discardlevel)
+{
+    LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
+
+    static LLCachedControl<bool> fast_cache_use_RAM(gSavedSettings,"FastCacheUseRAM", false);
+
+    LLImageDataSharedLock lock_image(raw);
+
+    //rescale image if needed
+    if (raw.isNull() || raw->isBufferInvalid() || !raw->getData() || discardlevel < 0 || id < 0)
+    {
+        LL_ERRS() << "Attempted to write NULL raw image to fastcache" << LL_ENDL;
+        return false;
+    }
+
+    if (discardlevel > MAX_DISCARD_LEVEL)
+    {
+        LL_WARNS() << "Discard Level geater then MAX_DISCARD LEVEL " << discardlevel << " : " << MAX_DISCARD_LEVEL << LL_ENDL;
+    }
+
+    LLMutexLock lock_cache(&mFastCacheMutex);
+
+    openFastCache();
+
+    FastCacheEntryHeader* currentCacheHeader = fast_cache_use_RAM ? mFastCacheRAMHeader : mFastCacheMMapHeader;
+
+    S64 entry_offset = 0;
+    S64 prev_header_offset = -1;
+    if (id > 0)
+    {
+        prev_header_offset = currentCacheHeader[id - 1].mOffset;
+    }
+    S64 header_offset = currentCacheHeader[id].mOffset; // The header offset of this texture
+
+    S32 entry_size = currentCacheHeader[id].mWidth * currentCacheHeader[id].mHeight * currentCacheHeader[id].mComponents;
+
+    // If the entry is valid and it was not upscaled to the MAX_DISCARD_LEVEL, then skip writing to the file and return true
+    if (entry_size > 0 && entry_size <= TEXTURE_FAST_CACHE_ENTRY_DATA_SIZE && mFastCacheRAMHeader[id].mDiscardLevel == MAX_DISCARD_LEVEL && mFastCacheRAMHeader[id].mOrgDiscardLevel <= MAX_DISCARD_LEVEL)
+    {
+        closeFastCache(true);
+        return true;
+    }
+
+    // Otherwise, we can procced to write the image to the fast cache
+    S32 w, h, c;
+    w = raw->getWidth();
+    h = raw->getHeight();
+    c = raw->getComponents();
+
+    S32 i = discardlevel;
+
+    //LL_INFOS() << "Before Size: " << w << "x" << h << "x" << c << " Discard: " << discardlevel << " ID: " << image_id.asString() << " Index: " << id << LL_ENDL;
+
+    currentCacheHeader[id].mOrgDiscardLevel = discardlevel;
+
+    // Scale the width and height to fit the lowest discard level allowed
+    while (i < MAX_DISCARD_LEVEL && (w > 16 && h > 16))
+    {
+        // Make sure the width and height cannot go below 16
+        w >>= 1;
+        h >>= 1;
+        if (w <= 16)
+            w = 16;
+        if (h <= 16)
+            h = 16;
+        ++i;
+    }
+
+    while (i > MAX_DISCARD_LEVEL)
+    {
+        // Make sure the width and height cannot go above 2048
+        w <<= 1;
+        h <<= 1;
+        if (w >= 2048)
+            w = 2048;
+        if (h >= 2048)
+            h = 2048;
+        --i;
+    }
+
+    // Calculate the entry size for the cache
+    entry_size = w * h * c;
+
+    if (entry_size <= 0)
+    {
+        LL_WARNS() << "Could not write to fast cache: ID " << image_id.asString().substr(0, 7) << " index: " << id << " Offset: " << entry_offset << " Size: " << entry_size << ":" << raw->getDataSize() << LL_ENDL;
+        closeFastCache(true);
+        return false;
+    }
+
+    // If the discard level changed from the one passed in
+    if (i != discardlevel)
+    {
+        if (entry_size > 0) // valid
+        {
+            // Make a duplicate to keep the original raw image untouched.
+            raw = raw->duplicate();
+
+            if (raw->isBufferInvalid())
+            {
+                LL_WARNS() << "Invalid image duplicate buffer" << LL_ENDL;
+                closeFastCache(true);
+                return false;
+            }
+            raw->scale(w, h);
+
+            // Set the discard level to the new low discard level (up to MAX_DISCARD_LEVEL)
+            discardlevel = i;
+        }
+    }
+
+    //LL_INFOS() << "After Size: " << w << "x" << h << "x" << c << " Discard: " << discardlevel << " ID: " << image_id.asString() << " Index: " << id << LL_ENDL;
+
+    // Write the header first
+    currentCacheHeader[id].mWidth = w;
+    currentCacheHeader[id].mHeight = h;
+    currentCacheHeader[id].mComponents = c;
+    currentCacheHeader[id].mDiscardLevel = discardlevel;
+    currentCacheHeader[id].mHasAux = false;
+
+    if (prev_header_offset >= 0)
+    {
+        entry_offset = prev_header_offset + (currentCacheHeader[id - 1].mWidth * currentCacheHeader[id - 1].mHeight * currentCacheHeader[id - 1].mComponents);
+    }
+
+    currentCacheHeader[id].mOffset = entry_offset;
+
+    entry_size = llmin(entry_size, TEXTURE_FAST_CACHE_ENTRY_DATA_SIZE);
+
+    if (!fast_cache_use_RAM)
+    {
+        memcpy(mFastCacheBodyPadBuffer, raw->getData(), entry_size);
+
+        mFastCacheBodyp->seek64(APR_SET, entry_offset);
+
+        if (mFastCacheBodyp->write64(mFastCacheBodyPadBuffer, entry_size) != entry_size)
+        {
+            LL_WARNS() << "Could not write to fast cache: ID " << image_id.asString().substr(0, 7) << " index: " << id << " Offset: " << entry_offset << " Size: " << entry_size << ":" << raw->getDataSize() << LL_ENDL;
+            closeFastCache(true);
+            return false;
+        }
+    }
+    else
+    {
+        // Write the body to fast cache expansion if the fast cache is in not in RAM Body already
+        if (!currentCacheHeader[id].mInRAM || (entry_offset + entry_size) > mSizeOfFastCacheBody)
+        {
+            U8* data = mFastCacheBodyPadBuffer;
+            S64 index = id - mFastCacheRAMExpansionHeaderIndex; // Take the fast cache RAM expansion header index and get an offset from the ID to get
+                                                                // the index into the fast cache RAM expsion.
+            // If the index is beyond the fast cache ram expansion size, need to add a new one
+            // If the index is not valid for the expansion, a new entry needs to be added.
+            if (index >= (S64)mFastCacheRAMBodyExpansion.size())
+            {
+                // Allocate a new buffer to store the data and copy the raw image data over
+                U8 *data = (U8*)ll_aligned_malloc_16(entry_size);
+                memcpy(data, raw->getData(), entry_size);
+                // Add the new image data to the fast cache RAM expansion
+                mFastCacheRAMBodyExpansion.push_back(data);
+            }
+            else
+            {
+                // Else, just copy to the existing fast cache ram expansion buffer
+                memcpy(mFastCacheRAMBodyExpansion[index], raw->getData(), entry_size);
+            }
+            /*
+            // Still write to the fast cache file, so it does not get skipped
+            mFastCacheBodyp->seek64(APR_SET, entry_offset);
+
+            if (mFastCacheBodyp->write64(mFastCacheRAMBodyExpansion[index], entry_size) != entry_size)
+            {
+                LL_WARNS() << "Could not write to fast cache: ID " << image_id.asString().substr(0, 7) << " index: " << id << " Offset: " << entry_offset << " Size: " << entry_size << ":" << raw->getDataSize() << LL_ENDL;
+                closeFastCache(true);
+                return false;
+            }
+            */
+        }
+        else
+        {
+            // Else, the data exists within the fast cache RAM body, so just write back to it.
+            // for updating the existing data with possibly better quality version of the MAX_DISCARD_LEVEL image.
+            memcpy(mFastCacheRAMBody + entry_offset, raw->getData(), entry_size);
+        }
+    }
+    //LL_WARNS() << "Wrote to fast cache: ID " << image_id.asString().substr(0, 7) << " index: " << id << " Offset: " << entry_offset << " Size: " << entry_size << ":" << raw->getDataSize() << LL_ENDL;
+
+    closeFastCache(true);
+
+    return true;
+}
+
 void LLTextureCache::openFastCache(bool first_time)
 {
-    if(!mFastCachep)
+    // Flag to enabled storing fast cache in RAM, or use Memory Map header and Regular file for cache
+    static LLCachedControl<bool> fast_cache_use_RAM(gSavedSettings,"FastCacheUseRAM", false);
+
+    if(!mFastCachep || !mFastCacheHeaderp || !mFastCacheBodyp)
     {
         if(first_time)
         {
             if(!mFastCachePadBuffer)
             {
                 mFastCachePadBuffer = (U8*)ll_aligned_malloc_16(TEXTURE_FAST_CACHE_ENTRY_SIZE);
+            }
+            if(!mFastCacheBodyPadBuffer)
+            {
+                mFastCacheBodyPadBuffer = (U8*)ll_aligned_malloc_16(TEXTURE_FAST_CACHE_ENTRY_DATA_SIZE);
+                memset(mFastCacheBodyPadBuffer, 0, TEXTURE_FAST_CACHE_ENTRY_DATA_SIZE);
             }
             mFastCachePoolp = new LLVolatileAPRPool(); // is_local= true by default, so not thread safe by default
             if (LLAPRFile::isExist(mFastCacheFileName, mFastCachePoolp))
@@ -2154,14 +2518,110 @@ void LLTextureCache::openFastCache(bool first_time)
             {
                 mFastCachep = new LLAPRFile(mFastCacheFileName, APR_CREATE|APR_READ|APR_WRITE|APR_BINARY, mFastCachePoolp) ;
             }
+            // Open the fast cache body file
+            if (LLAPRFile::isExist(mFastCacheBodyFileName, mFastCachePoolp))
+            {
+                mFastCacheBodyp = new LLAPRFile(mFastCacheBodyFileName, APR_READ|APR_WRITE|APR_BINARY, mFastCachePoolp) ;
+            }
+            else
+            {
+                mFastCacheBodyp = new LLAPRFile(mFastCacheBodyFileName, APR_CREATE|APR_READ|APR_WRITE|APR_BINARY, mFastCachePoolp) ;
+            }
+            // Use seperate header file as a memory map, uses a fixed size instead of variable, body of texture is now variable in size and fixed to discard 5
+            if (LLAPRFile::isExist(mFastCacheHeaderFileName, mFastCachePoolp))
+            {
+                // Just open the memory map if the file exists
+                mFastCacheHeaderp = new LLAPRFile(mFastCacheHeaderFileName, APR_READ | APR_WRITE | APR_BINARY, LL_APR_MMAP_RW, mFastCachePoolp);
+                mFastCacheHeaderp->memoryMapAssign64((void **)&mFastCacheMMapHeader, 0);
+            }
+            else
+            {
+                // Otherwise, create a fully sized header file zeroed out
+                mFastCacheHeaderp = new LLAPRFile(mFastCacheHeaderFileName, APR_CREATE | APR_READ | APR_WRITE | APR_BINARY, LL_APR_MMAP_RW, sizeof(FastCacheEntryHeader) * (sCacheMaxEntries + 1), true, mFastCachePoolp);
+                mFastCacheHeaderp->memoryMapAssign64((void **)&mFastCacheMMapHeader, 0);
+            }
         }
         else
         {
             mFastCachep = new LLAPRFile(mFastCacheFileName, APR_READ|APR_WRITE|APR_BINARY, mFastCachePoolp) ;
+            mFastCacheBodyp = new LLAPRFile(mFastCacheBodyFileName, APR_READ|APR_WRITE|APR_BINARY, mFastCachePoolp) ;
+            mFastCacheHeaderp = new LLAPRFile(mFastCacheHeaderFileName, APR_READ | APR_WRITE | APR_BINARY, LL_APR_MMAP_RW, mFastCachePoolp);
+            mFastCacheHeaderp->memoryMapAssign64((void **)&mFastCacheMMapHeader, 0);
         }
 
         mFastCacheTimer.reset();
     }
+
+    // If the fast cache is flagged to use RAM and the RAM header is not initalized, then
+    if (fast_cache_use_RAM && !mFastCacheRAMHeader)
+    {
+        // Set the fast cache headers to the max cache entries
+        mSizeOfFastCacheHeaders = sizeof(FastCacheEntryHeader) * (sCacheMaxEntries + 1);
+
+        mFastCacheRAMHeader = new FastCacheEntryHeader[mSizeOfFastCacheHeaders];
+        memset(mFastCacheRAMHeader, 0, mSizeOfFastCacheHeaders);
+
+        mFastCacheHeaderp->read64(mFastCacheRAMHeader, mSizeOfFastCacheHeaders);
+        
+        for (U32 index = 0; index < sCacheMaxEntries; index++)
+        {
+            if (mFastCacheRAMHeader[index].mInRAM)
+            {
+                mFastCacheRAMExpansionHeaderIndex++;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+    if (fast_cache_use_RAM && !mFastCacheRAMBody)
+    {
+        // Get the size of the file to read in
+        mSizeOfFastCacheBody = mFastCacheBodyp->size64();
+        // Allocate the memory and zero it out
+        mFastCacheRAMBody = (U8*)ll_aligned_malloc_16(mSizeOfFastCacheBody);
+        memset(mFastCacheRAMBody, 0, mSizeOfFastCacheBody);
+
+        // Read in the fast cache data
+        mFastCacheBodyp->read64(mFastCacheRAMBody, mSizeOfFastCacheBody);
+    }
+
+    if (!fast_cache_use_RAM && mFastCacheRAMBody && mFastCacheBodyp)
+    {
+        // Reset the fast cache back to first of the file
+        mFastCacheBodyp->seek64(APR_SET, 0);
+        // Store the updated RAM fast cache data to the file, just in case there was an update.
+        mFastCacheBodyp->write64(mFastCacheRAMBody, mSizeOfFastCacheBody);
+
+        for (int index = 0; index < mFastCacheRAMBodyExpansion.size(); index++)
+        {
+            FastCacheEntryHeader *save_header = mFastCacheRAMHeader + (mFastCacheRAMExpansionHeaderIndex + index);
+            save_header->mInRAM = true;
+            mFastCacheBodyp->seek64(APR_SET, save_header->mOffset);
+            mFastCacheBodyp->write64(mFastCacheRAMBodyExpansion[index], save_header->mWidth * save_header->mHeight * save_header->mComponents);
+            ll_aligned_free_16(mFastCacheRAMBodyExpansion[index]);
+        }
+
+        mFastCacheRAMBodyExpansion.clear();
+
+        ll_aligned_free_16(mFastCacheRAMBody);
+        mFastCacheRAMBody = NULL;
+
+        mFastCacheRAMExpansionHeaderIndex = 0;
+    }
+
+    if (!fast_cache_use_RAM && mFastCacheRAMHeader && mFastCacheHeaderp)
+    {
+        mFastCacheHeaderp->seek64(APR_SET, 0);
+        mFastCacheHeaderp->write64(mFastCacheRAMHeader, mSizeOfFastCacheHeaders);
+
+        delete mFastCacheRAMHeader;
+
+        mFastCacheRAMHeader = NULL;
+    }
+
     return;
 }
 
@@ -2174,14 +2634,63 @@ void LLTextureCache::closeFastCache(bool forced)
         return ;
     }
 
+    if (!mFastCacheHeaderp)
+    {
+        return;
+    }
+
+    if (!mFastCacheBodyp)
+    {
+        return;
+    }
+
     if(!forced && mFastCacheTimer.getElapsedTimeF32() < timeout)
     {
         return ;
     }
 
     delete mFastCachep;
+    delete mFastCacheHeaderp;
+    delete mFastCacheBodyp;
     mFastCachep = NULL;
+    mFastCacheHeaderp = NULL;
+    mFastCacheBodyp = NULL;
     return;
+}
+
+bool LLTextureCache::isInFastCacheMaxDiscard(LLUUID image_id)
+{
+    // Flag to enabled storing fast cache in RAM, or use Memory Map header and Regular file for cache
+    static LLCachedControl<bool> fast_cache_use_RAM(gSavedSettings,"FastCacheUseRAM", false);
+
+    U32 header_id;
+    {
+        LLMutexLock lock(&mHeaderMutex);
+        id_map_t::const_iterator iter = mHeaderIDMap.find(image_id);
+        if(iter == mHeaderIDMap.end())
+        {
+            return false; //not in the cache
+        }
+        header_id = iter->second;
+    }
+
+    LLMutexLock lock(&mFastCacheMutex);
+    openFastCache();
+
+    FastCacheEntryHeader* currentCacheHeader = fast_cache_use_RAM ? mFastCacheRAMHeader : mFastCacheMMapHeader;
+
+    S32 image_size = currentCacheHeader[header_id].mWidth * currentCacheHeader[header_id].mHeight * currentCacheHeader[header_id].mComponents;
+    if(image_size <= 0
+        || image_size > TEXTURE_FAST_CACHE_ENTRY_DATA_SIZE || currentCacheHeader[header_id].mDiscardLevel < 0) // invalid
+    {
+        closeFastCache();
+        return false;
+    }
+
+    closeFastCache();
+
+    return true;
+
 }
 
 bool LLTextureCache::writeComplete(handle_t handle, bool abort)

@@ -202,6 +202,7 @@ public:
     LLImageRaw();
     LLImageRaw(U16 width, U16 height, S8 components);
     LLImageRaw(const U8* data, U16 width, U16 height, S8 components);
+    LLImageRaw(U8 *data, U16 width, U16 height, S8 components, bool no_copy, bool need_release);
     LLImageRaw(U8 *data, U16 width, U16 height, S8 components, bool no_copy = false);
     // Construct using createFromFile (used by tools)
     //LLImageRaw(const std::string& filename, bool j2c_lowest_mip_only = false);
@@ -214,7 +215,7 @@ public:
     // so that deletion of this LLImageRaw will not free the memory at the "data" parameter
     // provided to "no_copy" constructor
     void releaseData();
-
+    bool mNeedRelease;
 
     bool resize(U16 width, U16 height, S8 components);
 

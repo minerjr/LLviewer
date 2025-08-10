@@ -800,6 +800,7 @@ LLImageRaw::LLImageRaw()
     : LLImageBase()
 {
     ++sRawImageCount;
+    mNeedRelease = false;
 }
 
 LLImageRaw::LLImageRaw(U16 width, U16 height, S8 components)
@@ -808,6 +809,7 @@ LLImageRaw::LLImageRaw(U16 width, U16 height, S8 components)
     //llassert( S32(width) * S32(height) * S32(components) <= MAX_IMAGE_DATA_SIZE );
     allocateDataSize(width, height, components);
     ++sRawImageCount;
+    mNeedRelease = false;
 }
 
 LLImageRaw::LLImageRaw(const U8* data, U16 width, U16 height, S8 components)
@@ -817,6 +819,7 @@ LLImageRaw::LLImageRaw(const U8* data, U16 width, U16 height, S8 components)
     {
         memcpy(getData(), data, width * height * components);
     }
+    mNeedRelease = false;
 }
 
 LLImageRaw::LLImageRaw(U8 *data, U16 width, U16 height, S8 components, bool no_copy)
@@ -831,6 +834,23 @@ LLImageRaw::LLImageRaw(U8 *data, U16 width, U16 height, S8 components, bool no_c
         memcpy(getData(), data, width*height*components);
     }
     ++sRawImageCount;
+    mNeedRelease = false;
+}
+
+LLImageRaw::LLImageRaw(U8 *data, U16 width, U16 height, S8 components, bool no_copy, bool need_release)
+    : LLImageBase()
+{
+    if(no_copy)
+    {
+        setDataAndSize(data, width, height, components);
+    }
+    else if(allocateDataSize(width, height, components))
+    {
+        memcpy(getData(), data, width*height*components);
+    }
+
+    mNeedRelease = need_release;
+    ++sRawImageCount;
 }
 
 //LLImageRaw::LLImageRaw(const std::string& filename, bool j2c_lowest_mip_only)
@@ -843,6 +863,11 @@ LLImageRaw::~LLImageRaw()
 {
     // NOTE: ~LLimageBase() call to deleteData() calls LLImageBase::deleteData()
     //        NOT LLImageRaw::deleteData()
+    // If need to release data first before deleting, then
+    if (mNeedRelease)
+    {
+        releaseData();
+    }
     deleteData();
     --sRawImageCount;
 }

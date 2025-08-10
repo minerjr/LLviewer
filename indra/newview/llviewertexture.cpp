@@ -1216,12 +1216,23 @@ void LLViewerFetchedTexture::loadFromFastCache()
     {
         return; //no need to access the fast cache.
     }
+
+    // Get flag for determining is use of the max discard fast cache version is used for reding in values.
+    static LLCachedControl<bool> fast_cache_use_max_discard(gSavedSettings,"FastCacheUseMaxDiscard", false);
+
     mInFastCacheList = false;
 
     add(LLTextureFetch::sCacheAttempt, 1.0);
 
     LLTimer fastCacheTimer;
-    mRawImage = LLAppViewer::getTextureCache()->readFromFastCache(getID(), mRawDiscardLevel);
+    if (fast_cache_use_max_discard)
+    {
+        mRawImage = LLAppViewer::getTextureCache()->readFromFastCacheMaxDiscard(getID(), mRawDiscardLevel);
+    }
+    else
+    {
+        mRawImage = LLAppViewer::getTextureCache()->readFromFastCache(getID(), mRawDiscardLevel);
+    }
     if(mRawImage.notNull())
     {
         F32 cachReadTime = fastCacheTimer.getElapsedTimeF32();
@@ -1958,6 +1969,8 @@ bool LLViewerFetchedTexture::updateFetch()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
     static LLCachedControl<bool> textures_decode_disabled(gSavedSettings,"TextureDecodeDisabled", false);
+    // Get flag for determining is use of the max discard fast cache version is used for reding in values.
+    static LLCachedControl<bool> fast_cache_use_max_discard(gSavedSettings,"FastCacheUseMaxDiscard", false);
 
     if(textures_decode_disabled) // don't fetch the surface textures in wireframe mode
     {
@@ -2097,6 +2110,68 @@ bool LLViewerFetchedTexture::updateFetch()
                 LL_PROFILE_ZONE_NAMED_CATEGORY_TEXTURE("vftuf - current <= desired");
                 make_request = false;
             }
+        }
+    }
+
+    if (fast_cache_use_max_discard && make_request && desired_discard == MAX_DISCARD_LEVEL && !mHasAux && getType() != LLViewerTexture::LOCAL_TEXTURE)
+    {
+
+        if (mInFastCacheList)
+        {
+            return false;
+        }
+        return false;
+        // If there is no raw image already
+        if (mRawImage.isNull())
+        {
+            // Try to load from fast cache the saved fast cache raw image(Should always be at max discard level)
+            mRawImage = LLAppViewer::getTextureCache()->readFromFastCacheMaxDiscard(getID(), mRawDiscardLevel);
+
+            if (mRawDiscardLevel <= desired_discard && mRawImage.notNull())
+            {
+                sRawCount++;
+                make_request = false;
+                mIsFetching = false;
+                mRequestedDiscardLevel = desired_discard + 1;
+                /*
+                if (processFetchResults(desired_discard, current_discard, mRawDiscardLevel, decode_priority))
+                {
+                    return false;
+                }
+                */
+                //scheduleCreateTexture();
+                bool redundant_load = hasGLTexture() && getDiscardLevel() <= getDesiredDiscardLevel();
+
+                if (!redundant_load)
+                {
+                    createTexture();
+                }
+
+                postCreateTexture();
+                mCreatePending = false;
+                return false;
+            }
+        }
+        else
+        {
+            //if (processFetchResults(desired_discard, current_discard, mRawDiscardLevel, decode_priority))
+            {
+                make_request = false;
+                mIsFetching = false;
+                mRequestedDiscardLevel = desired_discard + 1;
+                //scheduleCreateTexture();
+                bool redundant_load = hasGLTexture() && getDiscardLevel() <= getDesiredDiscardLevel();
+
+                if (!redundant_load)
+                {
+                    createTexture();
+                }
+
+                postCreateTexture();
+                mCreatePending = false;
+                return false;
+            }
+
         }
     }
 

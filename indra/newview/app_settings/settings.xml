@@ -1172,6 +1172,28 @@
       <key>Value</key>
       <integer>0</integer>
     </map>
+    <key>FastCacheUseMaxDiscard</key>
+    <map>
+        <key>Comment</key>
+        <string>Enable texture fast cache to use Discard MAX_DISCARD_LEVEL as a target discard level instread of 16x16 image.</string>
+        <key>Persist</key>
+        <integer>1</integer>
+        <key>Type</key>
+        <string>Boolean</string>
+        <key>Value</key>
+        <string>1</string>
+    </map>
+    <key>FastCacheUseRAM</key>
+    <map>
+        <key>Comment</key>
+        <string>Enable texture fast cache use RAM buffer for Discard MAX_DISCARD_LEVEL</string>
+        <key>Persist</key>
+        <integer>1</integer>
+        <key>Type</key>
+        <string>Boolean</string>
+        <key>Value</key>
+        <string>1</string>
+    </map>
     <key>EnableDiskCacheDebugInfo</key>
     <map>
       <key>Comment</key>

@@ -78,6 +78,33 @@ private:
         U32 mTime; // seconds since 1/1/1970
     };
 
+    struct FastCacheEntryHeader
+    {
+        FastCacheEntryHeader() : mWidth(0), mHeight(0), mComponents(0), mDiscardLevel(0), mOffset(0), mOrgDiscardLevel(0), mHasAux(false), mInRAM(false), mPad(0) {}
+        FastCacheEntryHeader(U16 width, U16 height, S8 components, S8 discard_level, S64 offset, S8 org_discard_level, bool hasAux, bool inRAM) :
+            mWidth(width),
+            mHeight(height),
+            mComponents(components),
+            mDiscardLevel(discard_level),
+            mOffset(offset),
+            mOrgDiscardLevel(org_discard_level),
+            mHasAux(hasAux),
+            mInRAM(inRAM),
+            mPad(0)
+        {
+        }
+        S64 mOffset;
+        U16 mWidth;
+        U16 mHeight;
+        S8 mComponents;
+        S8 mDiscardLevel;
+        S8 mOrgDiscardLevel;
+        bool mHasAux : 1;
+        bool mInRAM : 1;
+        U8 mPad : 6;
+        
+    };
+
 #if LL_WINDOWS
 #pragma pack(pop)
 #endif
@@ -128,6 +155,7 @@ public:
     handle_t writeToCache(const LLUUID& id, const U8* data, S32 datasize, S32 imagesize, LLPointer<LLImageRaw> rawimage, S32 discardlevel,
                           WriteResponder* responder);
     LLPointer<LLImageRaw> readFromFastCache(const LLUUID& id, S32& discardlevel);
+    LLPointer<LLImageRaw> readFromFastCacheMaxDiscard(const LLUUID& id, S32& discardlevel);
     bool writeComplete(handle_t handle, bool abort = false);
     void prioritizeWrite(handle_t handle);
 
@@ -189,6 +217,8 @@ private:
     void openFastCache(bool first_time = false);
     void closeFastCache(bool forced = false);
     bool writeToFastCache(LLUUID image_id, S32 cache_id, LLPointer<LLImageRaw> raw, S32 discardlevel);
+    bool writeToFastCacheMaxDiscard(LLUUID image_id, S32 id, LLPointer<LLImageRaw> raw, S32 discardlevel);
+    bool isInFastCacheMaxDiscard(LLUUID image_id);
 
 private:
     // Internal
@@ -198,6 +228,13 @@ private:
     LLMutex mFastCacheMutex;
     LLAPRFile* mHeaderAPRFile;
     LLVolatileAPRPool* mFastCachePoolp;
+    U8 *mFastCacheRAMBody;
+    std::vector<U8*> mFastCacheRAMBodyExpansion;
+    S64 mFastCacheRAMExpansionHeaderIndex;
+    FastCacheEntryHeader* mFastCacheRAMHeader;
+    FastCacheEntryHeader* mFastCacheMMapHeader;
+    S64 mSizeOfFastCacheBody;
+    S64 mSizeOfFastCacheHeaders;
 
     // mLocalAPRFilePoolp is not thread safe and is meant only for workers
     // howhever mHeaderEntriesFileName is accessed not from workers' threads
@@ -220,6 +257,8 @@ private:
     std::string mHeaderEntriesFileName;
     std::string mHeaderDataFileName;
     std::string mFastCacheFileName;
+    std::string mFastCacheHeaderFileName;
+    std::string mFastCacheBodyFileName;
     EntriesInfo mHeaderEntriesInfo;
     std::set<S32> mFreeList; // deleted entries
     std::set<LLUUID> mLRU;
@@ -227,8 +266,11 @@ private:
     id_map_t mHeaderIDMap;
 
     LLAPRFile*   mFastCachep;
+    LLAPRFile*   mFastCacheHeaderp;
+    LLAPRFile*   mFastCacheBodyp;
     LLFrameTimer mFastCacheTimer;
     U8*          mFastCachePadBuffer;
+    U8*          mFastCacheBodyPadBuffer;
 
     // BODIES (TEXTURES minus headers)
     std::string mTexturesDirName;
