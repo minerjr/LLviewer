@@ -884,6 +884,16 @@ void LLMaterialEditor::markChangesUnsaved(U32 dirty_flag)
 
 void LLMaterialEditor::setCanSaveAs(bool value)
 {
+    // <minerjr>
+    // If the object that is used by the Material Editor is on the global list of object's it is not from the user's avatar's inventory, so then
+    if (gObjectList.findObject(mObjectUUID))
+    {
+        // Disable the Save As button as the command copy_inventory_item fails if the parent ID is an object and not
+        // the user's inventory or owned folder.
+        childSetEnabled("save_as", false);
+        return;
+    }
+    // </minerjr>
     if (!mIsOverride)
     {
         childSetEnabled("save_as", value);
